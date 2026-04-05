@@ -38,6 +38,12 @@ import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-
 import { checkForUpdate } from "@/lib/cli/update-check";
 import { loadMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
 import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
+import {
+  estimateConversationTokens,
+  getContextWindow,
+  getCompactThreshold,
+  maybeCompact as doCompact,
+} from "@/lib/agent/context-manager";
 import type { ToolActivity } from "@/lib/agent/runtime";
 import {
   SLASH_COMMANDS,
@@ -458,6 +464,166 @@ export function App({
         addSystemMessage("  a  accept next pending update");
         addSystemMessage("  r  reject next pending update");
         addSystemMessage("  Esc  unfocus prompt");
+        break;
+      }
+      case "compact": {
+        if (history.length === 0) {
+          addSystemMessage("Nothing to compact — conversation is empty.");
+          break;
+        }
+        addSystemMessage("Compacting conversation...");
+        setBusy(true);
+        try {
+          // maybeCompact imported as doCompact above
+          const provider = await createProviderFromStoredAuth({ homeDir });
+          const msgs = [{ role: "system" as const, content: "compaction" }, ...history.map((m) => m as any)];
+          const { messages: compacted, didCompact } = await doCompact(
+            msgs, config?.defaults.model ?? "gpt-5.4", provider, sessionTokens
+          );
+          if (didCompact) {
+            const newHistory = compacted.filter((m: any) => m.role !== "system").map((m: any) => ({
+              role: m.role, content: m.content,
+            }));
+            setHistory(newHistory as any);
+            addSystemMessage(`Compacted. Context reduced to ~${Math.round(sessionTokens.estimatedCurrentTokens / 1000)}k tokens.`);
+          } else {
+            addSystemMessage("Context is already within limits — no compaction needed.");
+          }
+        } catch (err) {
+          addSystemMessage(`Compaction failed: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setBusy(false);
+        }
+        break;
+      }
+      case "cost": {
+        const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+        addSystemMessage("Session token usage:");
+        addSystemMessage(`  Input tokens:  ${k(sessionTokens.inputTokens)}`);
+        addSystemMessage(`  Output tokens: ${k(sessionTokens.outputTokens)}`);
+        addSystemMessage(`  Total tokens:  ${k(sessionTokens.totalTokens)}`);
+        addSystemMessage(`  Current context: ~${k(sessionTokens.estimatedCurrentTokens)}`);
+        addSystemMessage(`  Compactions: ${sessionTokens.compactionCount}`);
+        break;
+      }
+      case "context": {
+        const model = config?.defaults.model ?? "gpt-5.4";
+        const window = getContextWindow(model);
+        const threshold = getCompactThreshold(model);
+        const current = sessionTokens.estimatedCurrentTokens || estimateConversationTokens(
+          history.map((m) => m as any)
+        );
+        const pct = Math.round((current / window) * 100);
+        const barWidth = 40;
+        const filled = Math.round((pct / 100) * barWidth);
+        const bar = "\u2588".repeat(filled) + "\u2591".repeat(barWidth - filled);
+        const color = pct > 90 ? "red" : pct > 70 ? "yellow" : "green";
+        addSystemMessage(`Context window: ${model} (${(window / 1000).toFixed(0)}k)`);
+        addSystemMessage(`  [${bar}] ${pct}%`);
+        addSystemMessage(`  ${(current / 1000).toFixed(1)}k / ${(window / 1000).toFixed(0)}k tokens used`);
+        addSystemMessage(`  Auto-compact at ${(threshold / 1000).toFixed(0)}k (90%)`);
+        if (pct > 80) {
+          addSystemMessage("  Tip: run /compact to free space, or /clear to start fresh.");
+        }
+        break;
+      }
+      case "btw": {
+        if (!args) {
+          addSystemMessage("Usage: /btw <your side question>");
+          break;
+        }
+        if (!hasAuth) {
+          addSystemMessage("Not connected. Run /auth first.");
+          break;
+        }
+        addSystemMessage(`Side question: ${args}`);
+        setBusy(true);
+        try {
+          const provider = await createProviderFromStoredAuth({ homeDir });
+          const response = await provider.callLLM({
+            messages: [
+              { role: "system", content: "Answer this quick side question concisely. Do not reference any prior conversation." },
+              { role: "user", content: args },
+            ],
+            model: config?.defaults.model ?? "gpt-5.4",
+            maxTokens: 1000,
+          });
+          addSystemMessage(`Answer: ${response.content}`);
+        } catch (err) {
+          addSystemMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setBusy(false);
+        }
+        break;
+      }
+      case "export": {
+        const fileName = args?.trim() || "conversation-export.md";
+        const exportPath = require("node:path").resolve(workspacePath ?? process.cwd(), fileName);
+        const lines: string[] = [`# Open Research — Conversation Export\n`];
+        for (const msg of messages) {
+          if (msg.role === "user") lines.push(`## You\n${msg.text}\n`);
+          else if (msg.role === "assistant") lines.push(`## Agent\n${msg.text}\n`);
+          else lines.push(`> ${msg.text}\n`);
+        }
+        try {
+          const fsModule = require("node:fs/promises");
+          await fsModule.writeFile(exportPath, lines.join("\n"), "utf8");
+          addSystemMessage(`Exported ${messages.length} messages to ${exportPath}`);
+        } catch (err) {
+          addSystemMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+      case "diff": {
+        if (!workspacePath) {
+          addSystemMessage("No workspace active.");
+          break;
+        }
+        try {
+          const { execSync } = require("node:child_process");
+          const gitStatus = execSync("git status --short 2>/dev/null || echo 'Not a git repo'", {
+            cwd: workspacePath, encoding: "utf8",
+          }).trim();
+          if (!gitStatus || gitStatus === "Not a git repo") {
+            addSystemMessage("No changes detected (not a git repo or no modifications).");
+          } else {
+            addSystemMessage("Changed files:");
+            for (const line of gitStatus.split("\n")) {
+              addSystemMessage(`  ${line}`);
+            }
+          }
+        } catch {
+          addSystemMessage("Could not check changes.");
+        }
+        break;
+      }
+      case "doctor": {
+        addSystemMessage("Running diagnostics...");
+        // Auth
+        const authResult = await getAuthStatus({ homeDir });
+        addSystemMessage(`  Auth: ${authResult.connected ? "connected" : "not connected"} — ${authResult.message}`);
+        // Workspace
+        addSystemMessage(`  Workspace: ${workspacePath ? workspacePath : "none"}`);
+        addSystemMessage(`  Files: ${workspaceFiles.length}`);
+        // Skills
+        addSystemMessage(`  Skills: ${skills.length} loaded`);
+        // Memory
+        const mems = await loadMemories({ homeDir });
+        addSystemMessage(`  Memories: ${mems.length} stored`);
+        // Node
+        addSystemMessage(`  Node: ${process.version}`);
+        // Tools check
+        const toolChecks = ["python3 --version", "pdflatex --version", "git --version"];
+        for (const cmd of toolChecks) {
+          try {
+            const { execSync } = require("node:child_process");
+            const out = execSync(cmd + " 2>&1", { encoding: "utf8", timeout: 3000 }).trim().split("\n")[0];
+            addSystemMessage(`  ${cmd.split(" ")[0]}: ${out}`);
+          } catch {
+            addSystemMessage(`  ${cmd.split(" ")[0]}: not found`);
+          }
+        }
+        addSystemMessage("Diagnostics complete.");
         break;
       }
       case "preview": {

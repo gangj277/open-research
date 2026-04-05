@@ -13,6 +13,8 @@ import {
   getContextWindow,
   type SessionTokenUsage,
 } from "./context-manager";
+import { loadMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
+import { extractAndStoreMemories } from "@/lib/memory/extractor";
 
 // ── Tool Activity Event ─────────────────────────────────────────────────────
 
@@ -140,6 +142,7 @@ export async function runAgentTurn(input: {
   onTokenUpdate?: (usage: SessionTokenUsage) => void;
   /** Carry forward from previous turn for cumulative tracking */
   sessionUsage?: SessionTokenUsage;
+  onMemoryExtracted?: (memories: string[]) => void;
   signal?: AbortSignal;
 }): Promise<AgentTurnResult> {
   const requestedSkills = await parseRequestedSkills(input.message, input.homeDir);
@@ -156,8 +159,15 @@ export async function runAgentTurn(input: {
   const model = input.model ?? "gpt-5.4";
   const usage = input.sessionUsage ?? createSessionUsage();
 
+  // Load user memories and inject into system prompt
+  const memories = await loadMemories({ homeDir: input.homeDir });
+  const memoryBlock = formatMemoriesForPrompt(memories);
+  const fullSystemPrompt = memoryBlock
+    ? systemPrompt + "\n\n" + memoryBlock
+    : systemPrompt;
+
   let messages: LLMMessage[] = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: fullSystemPrompt },
     ...input.history,
     { role: "user", content: input.message },
   ];
@@ -218,6 +228,19 @@ export async function runAgentTurn(input: {
           detectedCharter = charterMatch[1].trim();
         }
       }
+
+      // Extract memories in the background (fire-and-forget)
+      extractAndStoreMemories({
+        userMessage: input.message,
+        agentResponse: fullText,
+        provider: input.provider,
+        model: "gpt-4o-mini",
+        homeDir: input.homeDir,
+      }).then((stored) => {
+        if (stored.length > 0) {
+          input.onMemoryExtracted?.(stored.map((m) => m.content));
+        }
+      }).catch(() => { /* best-effort */ });
 
       return {
         text: fullText,

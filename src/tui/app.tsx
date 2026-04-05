@@ -36,6 +36,7 @@ import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
+import { loadMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
 import type { ToolActivity } from "@/lib/agent/runtime";
 import {
   SLASH_COMMANDS,
@@ -457,6 +458,33 @@ export function App({
         addSystemMessage("  Esc  unfocus prompt");
         break;
       }
+      case "memory": {
+        if (args === "clear") {
+          await clearMemories({ homeDir });
+          addSystemMessage("All memories cleared.");
+          break;
+        }
+        if (args.startsWith("delete ")) {
+          const memId = args.slice(7).trim();
+          const deleted = await deleteMemory(memId, { homeDir });
+          addSystemMessage(deleted ? `Deleted memory ${memId.slice(0, 8)}...` : "Memory not found.");
+          break;
+        }
+        const mems = await loadMemories({ homeDir });
+        if (mems.length === 0) {
+          addSystemMessage("No memories stored yet. I'll learn about you as we talk.");
+        } else {
+          addSystemMessage(`${mems.length} memories:`);
+          for (const m of mems) {
+            addSystemMessage(`  [${m.category}] ${m.content}`);
+            addSystemMessage(`    id: ${m.id.slice(0, 8)}... · reinforced ${m.relevanceCount}x`);
+          }
+          addSystemMessage("");
+          addSystemMessage("  /memory clear — delete all");
+          addSystemMessage("  /memory delete <id> — delete one");
+        }
+        break;
+      }
       case "exit": {
         app.exit();
         break;
@@ -705,6 +733,11 @@ export function App({
             const dur = activity.durationMs ? ` (${(activity.durationMs / 1000).toFixed(1)}s)` : "";
             setCurrentToolActivity("");
             addSystemMessage(`  \u2713 ${activity.description ?? activity.name}${dur}`);
+          }
+        },
+        onMemoryExtracted: (mems) => {
+          for (const m of mems) {
+            addSystemMessage(`  ◊ remembered: ${m}`);
           }
         },
         onCompaction: () => {

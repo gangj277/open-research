@@ -18,6 +18,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "clear", aliases: ["/new"], description: "Clear conversation and start fresh", category: "session" },
   { name: "help", aliases: ["/commands"], description: "Show available commands", category: "system" },
   { name: "config", aliases: ["/settings"], description: "View or change settings (e.g. /config theme dark)", category: "system" },
+  { name: "memory", aliases: ["/memories"], description: "View or clear stored memories about you", category: "system" },
   { name: "exit", aliases: ["/quit", "/q"], description: "Exit Open Research", category: "system" },
 ];
 

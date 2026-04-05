@@ -1,0 +1,59 @@
+{
+  "name": "open-research",
+  "version": "0.1.0",
+  "description": "Local-first research CLI agent — discover papers, synthesize notes, run analysis, and draft artifacts from your terminal.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "open-research": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "builtin-skills"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup src/cli.ts --format esm --clean --out-dir dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gangj277/open-research.git"
+  },
+  "homepage": "https://github.com/gangj277/open-research",
+  "keywords": [
+    "research",
+    "cli",
+    "agent",
+    "papers",
+    "academic",
+    "openai",
+    "arxiv",
+    "semantic-scholar"
+  ],
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "commander": "^14.0.1",
+    "gray-matter": "^4.0.3",
+    "ink": "^6.3.1",
+    "ink-text-input": "^6.0.0",
+    "open": "^10.2.0",
+    "pdfjs-dist": "^5.4.296",
+    "react": "^19.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.2.2",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

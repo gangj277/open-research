@@ -1,0 +1,33 @@
+import fs from "node:fs/promises";
+
+export interface PdfExtractResult {
+  text: string;
+  totalPages: number;
+}
+
+export async function extractPdfText(
+  filePath: string,
+  options?: { startPage?: number; endPage?: number }
+): Promise<PdfExtractResult> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const buffer = await fs.readFile(filePath);
+  const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) })
+    .promise;
+  const totalPages = document.numPages;
+  const start = Math.max(1, options?.startPage ?? 1);
+  const end = Math.min(totalPages, options?.endPage ?? totalPages);
+
+  const pages: string[] = [];
+  for (let pageNumber = start; pageNumber <= end; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = content.items
+      .map((item) => ("str" in item ? String(item.str) : ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) pages.push(text);
+  }
+
+  return { text: pages.join("\n\n"), totalPages };
+}

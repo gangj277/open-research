@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { LLMProvider } from "@/lib/llm/provider";
-import { writeAgentsMd } from "./agents-md";
+import { readAgentsMd, writeAgentsMd } from "./agents-md";
 
 const IGNORED_DIRS = new Set([
   "node_modules", ".git", "dist", "build", ".next", "__pycache__",
@@ -14,11 +14,7 @@ const INTERESTING_FILES = new Set([
   "README.md", "README.txt", "readme.md",
   "Makefile", "Dockerfile", "docker-compose.yml",
   ".env.example", "tsconfig.json", "vitest.config.ts", "jest.config.js",
-]);
-
-const TEXT_EXTENSIONS = new Set([
-  ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
-  ".py", ".ts", ".tsx", ".js", ".jsx", ".r", ".R", ".tex", ".bib",
+  "AGENTS.md",
 ]);
 
 interface FileInfo {
@@ -38,7 +34,7 @@ async function scanDirectoryShallow(dir: string, maxDepth = 2, depth = 0): Promi
       if (entry.name.startsWith(".") && depth === 0 && entry.isDirectory()) continue;
 
       const fullPath = path.join(dir, entry.name);
-      const relativePath = path.relative(process.cwd(), fullPath);
+      const relativePath = path.relative(dir, fullPath);
 
       if (entry.isDirectory()) {
         results.push({ path: relativePath + "/", size: 0, isDir: true });
@@ -56,47 +52,53 @@ async function scanDirectoryShallow(dir: string, maxDepth = 2, depth = 0): Promi
 
 async function readKeyFiles(dir: string): Promise<Record<string, string>> {
   const contents: Record<string, string> = {};
-
   for (const name of INTERESTING_FILES) {
-    const filePath = path.join(dir, name);
     try {
-      const content = await fs.readFile(filePath, "utf8");
-      // Only include first 2000 chars of each file
+      const content = await fs.readFile(path.join(dir, name), "utf8");
       contents[name] = content.slice(0, 2000);
-    } catch { /* file doesn't exist */ }
+    } catch { /* doesn't exist */ }
   }
-
   return contents;
 }
 
-const INIT_PROMPT = `You are creating an AGENTS.md file for a research workspace. This file will be injected into an AI research agent's system prompt every session to give it instant project context.
+const CREATE_PROMPT = `You are creating an AGENTS.md file for a research workspace. This file is injected into an AI research agent's system prompt every session to give it instant project context.
 
-Based on the directory structure and key file contents below, write a concise AGENTS.md that covers:
-
-## Project Overview
-What is this project about? What type of research?
-
-## Structure
-Key directories and what they contain (only the important ones).
-
-## Key Files
-Important files and what they do (only the notable ones).
-
-## Research Context
-What research appears to be in progress based on the files?
-
-## Development
-How to build/run/test (if applicable, based on package.json or similar).
+Write a concise AGENTS.md covering:
+## Project Overview — What is this project? What research?
+## Structure — Key directories and their purpose (only important ones)
+## Key Files — Notable files and what they do
+## Research Context — What research is in progress?
+## Development — How to build/run/test (if applicable)
 
 Rules:
-- Keep it under 1500 characters total
-- Be specific to THIS project, not generic
-- If it's unclear what the project does, say so and note what you can see
-- Use markdown with ## headings
-- Don't include obvious things ("node_modules contains npm packages")`;
+- Under 1500 characters. This goes into every system prompt.
+- Specific to THIS project. No generic advice.
+- Markdown with ## headings.`;
+
+const UPDATE_PROMPT = `You are updating an existing AGENTS.md file for a research workspace. This file is injected into an AI research agent's system prompt every session.
+
+You have:
+1. The CURRENT AGENTS.md content
+2. A fresh scan of the workspace directory and key files
+
+Your job: compare the current AGENTS.md against the actual workspace state. Update it to reflect reality:
+- Add new directories/files that appeared
+- Remove references to things that no longer exist
+- Update descriptions that are now outdated
+- Preserve any manually-added notes or context the user wrote
+- Keep the same ## heading structure
+
+If AGENTS.md is already accurate, output it unchanged.
+
+Rules:
+- Under 1500 characters. This goes into every system prompt.
+- Output the FULL updated AGENTS.md content, not a diff.
+- Markdown with ## headings.`;
 
 /**
- * Scan the workspace and generate an initial AGENTS.md using an LLM.
+ * Generate or update AGENTS.md by scanning the workspace.
+ * If AGENTS.md exists, reads it and updates intelligently.
+ * If it doesn't exist, creates it from scratch.
  */
 export async function generateInitialAgentsMd(input: {
   workspaceDir: string;
@@ -105,25 +107,40 @@ export async function generateInitialAgentsMd(input: {
 }): Promise<string> {
   const dir = input.workspaceDir;
 
-  // Scan directory structure
+  // Scan workspace
   const files = await scanDirectoryShallow(dir);
   const tree = files
     .slice(0, 100)
     .map((f) => `${f.isDir ? "d" : "f"} ${f.path}${f.size > 0 ? ` (${(f.size / 1024).toFixed(1)}KB)` : ""}`)
     .join("\n");
 
-  // Read key files
   const keyFiles = await readKeyFiles(dir);
   const keyFileText = Object.entries(keyFiles)
     .map(([name, content]) => `### ${name}\n\`\`\`\n${content}\n\`\`\``)
     .join("\n\n");
 
-  const userMessage = `Directory: ${dir}\n\nFile tree:\n${tree}\n\n${keyFileText ? `Key files:\n${keyFileText}` : "No recognizable key files found."}`;
+  const scanData = `Directory: ${dir}\n\nFile tree:\n${tree}\n\n${keyFileText || "No recognizable key files found."}`;
+
+  // Check if AGENTS.md already exists
+  const existing = await readAgentsMd(dir);
+
+  let systemPrompt: string;
+  let userMessage: string;
+
+  if (existing) {
+    // Update mode
+    systemPrompt = UPDATE_PROMPT;
+    userMessage = `Current AGENTS.md:\n---\n${existing}\n---\n\nFresh workspace scan:\n${scanData.slice(0, 25000)}`;
+  } else {
+    // Create mode
+    systemPrompt = CREATE_PROMPT;
+    userMessage = scanData.slice(0, 25000);
+  }
 
   const response = await input.provider.callLLM({
     messages: [
-      { role: "system", content: INIT_PROMPT },
-      { role: "user", content: userMessage.slice(0, 30000) },
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
     ],
     model: input.model ?? "gpt-5.4-mini",
     maxTokens: 2048,

@@ -76,9 +76,6 @@ function describeToolCall(name: string, args: Record<string, unknown>): string {
 // ── System Prompt ───────────────────────────────────────────────────────────
 
 function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]): string {
-  const workspaceMap = ctx.availableKeys
-    .map((key) => `- ${key}${ctx.fileLabels?.[key] ? ` — ${ctx.fileLabels[key]}` : ""}`)
-    .join("\n");
   const skillText = activeSkills
     .map((skill) => `## Active Skill: ${skill.name}\n${skill.prompt}`)
     .join("\n\n");
@@ -87,8 +84,9 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     "",
     "## Capabilities",
     "You have full access to the local filesystem and shell. You can:",
-    "- Read any file on disk with read_file (not limited to workspace files)",
-    "- List directories with list_directory to explore project structure",
+    "- Read any file on disk with read_file",
+    "- List directories with list_directory to explore the workspace and discover files",
+    "- Search file contents with search_workspace",
     "- Run shell commands with run_command (python, R, node, LaTeX, curl, git, etc.)",
     "- Write new workspace files or edit existing ones",
     "- Search academic papers across OpenAlex, Semantic Scholar, and arXiv",
@@ -97,14 +95,15 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     "- Activate research skills for specialized workflows",
     "",
     "## Principles",
-    "- Read before writing. Understand the workspace before making changes.",
+    "- Start by exploring. Use list_directory and search_workspace to understand the workspace before acting.",
+    "- Read before writing. Understand existing files before making changes.",
     "- Ground claims in sources. Cite papers and data, not assumptions.",
     "- Run code to verify. When you write a script, run it and check the output.",
     "- Be transparent. Show the user what you're doing and why.",
     "- When unsure, ask. Use ask_user rather than guessing.",
     "- For large outputs, redirect to a file and read selectively.",
     "",
-    workspaceMap ? `## Workspace Files\n${workspaceMap}` : "## Workspace Files\nnone",
+    `## Workspace\nRoot: ${process.cwd()}\nUse list_directory to explore. Use search_workspace or read_file to read content.`,
     skillText,
   ]
     .filter(Boolean)

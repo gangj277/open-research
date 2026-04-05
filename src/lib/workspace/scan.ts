@@ -18,10 +18,16 @@ export interface WorkspaceScanResult {
   files: Array<{ key: string; label: string; path: string; content: string }>;
 }
 
+const IGNORED_DIRS = new Set([
+  ".open-research", "node_modules", ".git", "dist", "build", ".next",
+  "__pycache__", ".venv", "venv", ".cache", "target", ".tox",
+  "coverage", ".nyc_output", ".parcel-cache", ".turbo",
+]);
+
 async function walkDir(rootDir: string, currentDir: string, out: WorkspaceScanResult["files"]) {
   const entries = await fs.readdir(currentDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === ".open-research") {
+    if (IGNORED_DIRS.has(entry.name)) {
       continue;
     }
     const fullPath = path.join(currentDir, entry.name);

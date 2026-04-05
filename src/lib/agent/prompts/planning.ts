@@ -5,12 +5,7 @@ export function buildPlanningSystemPrompt(
   ctx: WorkspaceContext,
   activeSkills: RuntimeSkill[]
 ): string {
-  const workspaceMap = ctx.availableKeys
-    .map(
-      (key) =>
-        `- ${key}${ctx.fileLabels?.[key] ? ` — ${ctx.fileLabels[key]}` : ""}`
-    )
-    .join("\n");
+  // No file map — agent uses tools to discover files
 
   const skillText = activeSkills
     .map((skill) => `## Active Skill: ${skill.name}\n${skill.prompt}`)
@@ -79,9 +74,7 @@ export function buildPlanningSystemPrompt(
     "- If the user's intent is already crystal clear, you can produce the charter after just 1 question or even immediately.",
     "- Ground your proposed steps in what you've learned from the workspace and external search results.",
     "",
-    workspaceMap
-      ? `## Workspace Files\n${workspaceMap}`
-      : "## Workspace Files\nnone",
+    `## Workspace\nRoot: ${process.cwd()}\nUse list_directory to explore. Use search_workspace or read_file to read content.`,
     skillText,
   ]
     .filter(Boolean)

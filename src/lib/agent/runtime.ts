@@ -15,6 +15,7 @@ import {
 } from "./context-manager";
 import { loadMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
 import { extractAndStoreMemories } from "@/lib/memory/extractor";
+import { readAgentsMd, maybeUpdateAgentsMd } from "@/lib/workspace/agents-md";
 
 // ── Tool Activity Event ─────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ export async function runAgentTurn(input: {
   /** Carry forward from previous turn for cumulative tracking */
   sessionUsage?: SessionTokenUsage;
   onMemoryExtracted?: (memories: string[]) => void;
+  onAgentsMdUpdated?: () => void;
   signal?: AbortSignal;
 }): Promise<AgentTurnResult> {
   const requestedSkills = await parseRequestedSkills(input.message, input.homeDir);
@@ -158,12 +160,18 @@ export async function runAgentTurn(input: {
   const model = input.model ?? "gpt-5.4";
   const usage = input.sessionUsage ?? createSessionUsage();
 
-  // Load user memories and inject into system prompt
+  // Load user memories and project-level AGENTS.md
   const memories = await loadMemories({ homeDir: input.homeDir });
   const memoryBlock = formatMemoriesForPrompt(memories);
-  const fullSystemPrompt = memoryBlock
-    ? systemPrompt + "\n\n" + memoryBlock
-    : systemPrompt;
+  const agentsMd = input.workspace.workspaceDir
+    ? await readAgentsMd(input.workspace.workspaceDir).catch(() => "")
+    : "";
+  const contextBlocks = [
+    systemPrompt,
+    memoryBlock ? memoryBlock : null,
+    agentsMd ? `## Project Context (from AGENTS.md)\n${agentsMd}` : null,
+  ].filter(Boolean).join("\n\n");
+  const fullSystemPrompt = contextBlocks;
 
   let messages: LLMMessage[] = [
     { role: "system", content: fullSystemPrompt },
@@ -228,7 +236,7 @@ export async function runAgentTurn(input: {
         }
       }
 
-      // Extract memories in the background (fire-and-forget)
+      // Background: extract memories + update AGENTS.md (fire-and-forget)
       extractAndStoreMemories({
         userMessage: input.message,
         agentResponse: fullText,
@@ -240,6 +248,19 @@ export async function runAgentTurn(input: {
           input.onMemoryExtracted?.(stored.map((m) => m.content));
         }
       }).catch(() => { /* best-effort */ });
+
+      // Update project-level AGENTS.md in background
+      if (input.workspace.workspaceDir) {
+        maybeUpdateAgentsMd({
+          workspaceDir: input.workspace.workspaceDir,
+          userMessage: input.message,
+          agentResponse: fullText,
+          provider: input.provider,
+          model: "gpt-5.4-mini",
+        }).then((updated) => {
+          if (updated) input.onAgentsMdUpdated?.();
+        }).catch(() => { /* best-effort */ });
+      }
 
       return {
         text: fullText,

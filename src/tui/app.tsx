@@ -37,6 +37,7 @@ import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type A
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
 import { loadMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
+import { generateInitialAgentsMd } from "@/lib/workspace/init-agents-md";
 import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import {
   estimateConversationTokens,
@@ -352,6 +353,21 @@ export function App({
             addSystemMessage(`Initialized workspace "${project.title}" at ${target}`);
             const scanned = await scanWorkspace(target);
             startTransition(() => setWorkspaceFiles(scanned.files));
+            // Generate AGENTS.md by scanning the directory
+            if (hasAuth) {
+              addSystemMessage("Generating AGENTS.md...");
+              try {
+                const provider = await createProviderFromStoredAuth({ homeDir });
+                await generateInitialAgentsMd({
+                  workspaceDir: target,
+                  provider,
+                  model: "gpt-5.4-mini",
+                });
+                addSystemMessage("AGENTS.md created — project context will be loaded on every session.");
+              } catch {
+                addSystemMessage("AGENTS.md generation skipped (connect auth first).");
+              }
+            }
           } catch (err) {
             addSystemMessage(`Init failed: ${err instanceof Error ? err.message : String(err)}`);
           } finally {
@@ -896,6 +912,7 @@ export function App({
       const provider = await createProviderFromStoredAuth({ homeDir });
       const workspace = await scanWorkspace(workspacePath);
       const workspaceContext = {
+        workspaceDir: workspacePath!,
         runId: sessionId,
         workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
         availableKeys: workspace.files.map((f) => f.key),
@@ -1042,6 +1059,7 @@ export function App({
       const provider = await createProviderFromStoredAuth({ homeDir });
       const workspace = await scanWorkspace(workspacePath);
       const workspaceContext = {
+        workspaceDir: workspacePath!,
         runId: sessionId,
         workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
         availableKeys: workspace.files.map((f) => f.key),

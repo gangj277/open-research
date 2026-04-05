@@ -138,6 +138,8 @@ export interface WorkspaceToolSearchArgs {
 }
 
 export interface WorkspaceContext {
+  /** Absolute path to the workspace root directory */
+  workspaceDir?: string;
   /** Run ID — needed for persisting agent-discovered sources */
   runId?: string;
   /** All workspace file keys → content (artifacts + edited overlays) */

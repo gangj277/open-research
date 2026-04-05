@@ -4,11 +4,37 @@ Local-first research CLI agent. Discover papers, synthesize notes, run analysis,
 
 ## Install
 
+Requires Node.js 20+.
+
+**curl**
+```bash
+curl -fsSL https://raw.githubusercontent.com/gangj277/open-research/main/install.sh | bash
+```
+
+**npm**
 ```bash
 npm install -g open-research
 ```
 
-Requires Node.js 20+.
+**bun**
+```bash
+bun install -g open-research
+```
+
+**pnpm**
+```bash
+pnpm add -g open-research
+```
+
+**yarn**
+```bash
+yarn global add open-research
+```
+
+**npx** (no install, runs latest)
+```bash
+npx open-research
+```
 
 ## Quick Start
 

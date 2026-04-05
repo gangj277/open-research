@@ -35,6 +35,7 @@ import { AVAILABLE_MODELS } from "@/lib/llm/model-map";
 import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
+import { checkForUpdate } from "@/lib/cli/update-check";
 import type { ToolActivity } from "@/lib/agent/runtime";
 import {
   SLASH_COMMANDS,
@@ -181,6 +182,10 @@ export function App({
       setTheme(cfg.theme);
       const auth = await loadStoredAuth({ homeDir });
       setAuthStatus(auth ? "connected" : "missing");
+      // Check for updates (non-blocking)
+      checkForUpdate().then((msg) => {
+        if (msg) addSystemMessage(msg);
+      });
     })();
   }, [homeDir]);
 

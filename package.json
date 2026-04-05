@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "open-research": "./dist/cli.js"
+    "open-research": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -23,7 +23,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/gangj277/open-research.git"
+    "url": "git+https://github.com/gangj277/open-research.git"
   },
   "homepage": "https://github.com/gangj277/open-research",
   "keywords": [

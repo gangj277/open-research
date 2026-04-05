@@ -134,21 +134,30 @@ describe("session usage tracking", () => {
 
   test("updates from API response with detailed breakdown", () => {
     const usage = createSessionUsage();
-    updateUsageFromApi(usage, { promptTokens: 100, completionTokens: 50, totalTokens: 150 });
-    expect(usage.cumulative.input).toBe(100);
-    expect(usage.cumulative.output).toBe(50);
+    // First turn: 100 input (20 cached), 50 output (10 reasoning)
+    updateUsageFromApi(usage, {
+      promptTokens: 100, completionTokens: 50, totalTokens: 150,
+      cachedTokens: 20, reasoningTokens: 10,
+    });
+    expect(usage.cumulative.input).toBe(80); // 100 - 20 cached
+    expect(usage.cumulative.output).toBe(40); // 50 - 10 reasoning
+    expect(usage.cumulative.reasoning).toBe(10);
+    expect(usage.cumulative.cache.read).toBe(20);
     expect(usage.cumulative.total).toBe(150);
     expect(usage.lastTurn.total).toBe(150);
-    // Legacy compat
-    expect(usage.inputTokens).toBe(100);
-    expect(usage.totalTokens).toBe(150);
 
-    // Second update accumulates cumulative, overwrites lastTurn
-    updateUsageFromApi(usage, { promptTokens: 200, completionTokens: 80, totalTokens: 280 });
-    expect(usage.cumulative.input).toBe(300);
-    expect(usage.cumulative.output).toBe(130);
+    // Second turn: 200 input (50 cached), 80 output (0 reasoning)
+    updateUsageFromApi(usage, {
+      promptTokens: 200, completionTokens: 80, totalTokens: 280,
+      cachedTokens: 50,
+    });
+    expect(usage.cumulative.input).toBe(80 + 150); // (100-20) + (200-50)
+    expect(usage.cumulative.output).toBe(40 + 80); // (50-10) + 80
+    expect(usage.cumulative.reasoning).toBe(10); // only first turn had reasoning
+    expect(usage.cumulative.cache.read).toBe(70); // 20 + 50
     expect(usage.cumulative.total).toBe(430);
-    expect(usage.lastTurn.total).toBe(280);
-    expect(usage.lastTurn.input).toBe(200);
+    // Last turn overwrites
+    expect(usage.lastTurn.input).toBe(150); // 200 - 50
+    expect(usage.lastTurn.cache.read).toBe(50);
   });
 });

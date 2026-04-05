@@ -120,19 +120,34 @@ export function createSessionUsage(): SessionTokenUsage {
 
 export function updateUsageFromApi(
   usage: SessionTokenUsage,
-  apiUsage: { promptTokens: number; completionTokens: number; totalTokens: number }
+  apiUsage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cachedTokens?: number;
+    reasoningTokens?: number;
+  }
 ): void {
+  const cached = apiUsage.cachedTokens ?? 0;
+  const reasoning = apiUsage.reasoningTokens ?? 0;
+  // Adjusted input = total input - cached (to isolate non-cached input, like OpenCode)
+  const adjustedInput = Math.max(0, apiUsage.promptTokens - cached);
+  // Adjusted output = total output - reasoning (to separate text output from thinking)
+  const adjustedOutput = Math.max(0, apiUsage.completionTokens - reasoning);
+
   // Update cumulative
-  usage.cumulative.input += apiUsage.promptTokens;
-  usage.cumulative.output += apiUsage.completionTokens;
+  usage.cumulative.input += adjustedInput;
+  usage.cumulative.output += adjustedOutput;
+  usage.cumulative.reasoning += reasoning;
+  usage.cumulative.cache.read += cached;
   usage.cumulative.total += apiUsage.totalTokens;
 
   // Update last turn (overwrite — latest step is most accurate)
   usage.lastTurn = {
-    input: apiUsage.promptTokens,
-    output: apiUsage.completionTokens,
-    reasoning: 0,
-    cache: { read: 0, write: 0 },
+    input: adjustedInput,
+    output: adjustedOutput,
+    reasoning,
+    cache: { read: cached, write: 0 },
     total: apiUsage.totalTokens,
   };
 

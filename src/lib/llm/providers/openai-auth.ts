@@ -285,11 +285,7 @@ export function createOpenAIAuthProvider(
 
       let fullContent = "";
       let usageData:
-        | {
-            promptTokens: number;
-            completionTokens: number;
-            totalTokens: number;
-          }
+        | import("../types").LLMUsage
         | undefined;
       let responseModel = model;
 
@@ -299,12 +295,17 @@ export function createOpenAIAuthProvider(
         } else if (event.type === "response.completed") {
           const resp = event.data.response as Record<string, unknown> | undefined;
           if (resp?.usage) {
-            const usage = resp.usage as Record<string, number>;
+            const u = resp.usage as Record<string, unknown>;
+            const inputDetails = u.input_tokens_details as Record<string, number> | undefined;
+            const outputDetails = u.output_tokens_details as Record<string, number> | undefined;
+            const inputTokens = (u.input_tokens as number) ?? 0;
+            const outputTokens = (u.output_tokens as number) ?? 0;
             usageData = {
-              promptTokens: usage.input_tokens ?? 0,
-              completionTokens: usage.output_tokens ?? 0,
-              totalTokens:
-                (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
+              promptTokens: inputTokens,
+              completionTokens: outputTokens,
+              totalTokens: (u.total_tokens as number) ?? inputTokens + outputTokens,
+              cachedTokens: inputDetails?.cached_tokens ?? 0,
+              reasoningTokens: outputDetails?.reasoning_tokens ?? 0,
             };
           }
           if (resp?.model) {
@@ -376,11 +377,7 @@ export function createOpenAIAuthProvider(
       >();
       let toolCallIndex = 0;
       let usage:
-        | {
-            promptTokens: number;
-            completionTokens: number;
-            totalTokens: number;
-          }
+        | import("../types").LLMUsage
         | undefined;
 
       for await (const event of parseResponsesSSE(response.body)) {
@@ -444,13 +441,17 @@ export function createOpenAIAuthProvider(
           case "response.completed": {
             const resp = event.data.response as Record<string, unknown> | undefined;
             if (resp?.usage) {
-              const responseUsage = resp.usage as Record<string, number>;
+              const u = resp.usage as Record<string, unknown>;
+              const inputDetails = u.input_tokens_details as Record<string, number> | undefined;
+              const outputDetails = u.output_tokens_details as Record<string, number> | undefined;
+              const inputTokens = (u.input_tokens as number) ?? 0;
+              const outputTokens = (u.output_tokens as number) ?? 0;
               usage = {
-                promptTokens: responseUsage.input_tokens ?? 0,
-                completionTokens: responseUsage.output_tokens ?? 0,
-                totalTokens:
-                  (responseUsage.input_tokens ?? 0) +
-                  (responseUsage.output_tokens ?? 0),
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens: (u.total_tokens as number) ?? inputTokens + outputTokens,
+                cachedTokens: inputDetails?.cached_tokens ?? 0,
+                reasoningTokens: outputDetails?.reasoning_tokens ?? 0,
               };
             }
             break;

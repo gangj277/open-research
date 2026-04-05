@@ -66,6 +66,16 @@ export interface AccumulatedToolCall {
   arguments: string;
 }
 
+export interface LLMUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** Cached input tokens (prompt cache hits) */
+  cachedTokens: number;
+  /** Reasoning/thinking tokens (subset of completion) */
+  reasoningTokens: number;
+}
+
 export type StreamChunk =
   | { type: "text_delta"; content: string }
   | { type: "tool_call_start"; index: number; id: string; name: string }
@@ -74,7 +84,7 @@ export type StreamChunk =
       type: "done";
       content: string;
       toolCalls: AccumulatedToolCall[];
-      usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+      usage?: LLMUsage;
     };
 
 export interface StreamingLLMOptions {

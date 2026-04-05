@@ -41,12 +41,6 @@ program
           pendingUpdates: [],
         },
       }),
-      {
-        kittyKeyboard: {
-          mode: "enabled",
-          flags: ["disambiguateEscapeCodes", "reportAlternateKeys"],
-        },
-      }
     );
   });
 

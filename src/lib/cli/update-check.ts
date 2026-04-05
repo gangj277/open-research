@@ -26,14 +26,24 @@ async function writeState(state: UpdateState): Promise<void> {
 }
 
 function getCurrentVersion(): string {
-  // Read from the package.json that ships with the installed package
+  // Try env var first (works with npm run dev)
+  if (process.env.npm_package_version) return process.env.npm_package_version;
+  // Read from the installed package.json on disk
   try {
-    const pkgPath = new URL("../../../package.json", import.meta.url);
-    // For bundled builds, fall back to a hardcoded approach
-    return process.env.npm_package_version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
+    const fs = require("node:fs");
+    const path = require("node:path");
+    // Walk up from dist/cli.js to find package.json
+    let dir = __dirname || path.dirname(new URL(import.meta.url).pathname);
+    for (let i = 0; i < 5; i++) {
+      const pkgFile = path.join(dir, "package.json");
+      if (fs.existsSync(pkgFile)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+        if (pkg.name === "open-research" && pkg.version) return pkg.version;
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* ignore */ }
+  return "0.0.0";
 }
 
 async function fetchLatestVersion(): Promise<string | null> {

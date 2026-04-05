@@ -120,8 +120,8 @@ export default function TextInput({
         return;
       }
 
-      if (key.return && key.shift) {
-        // Shift+Enter inserts a newline
+      // Newline insertion: Shift+Enter (kitty terminals) OR Alt+Enter (universal)
+      if ((key.return && key.shift) || (key.return && key.meta)) {
         const inserted =
           originalValue.slice(0, cursorOffset) +
           "\n" +

@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "build": "tsup src/cli.ts --format esm --clean --out-dir dist",
+    "build": "tsup --config tsup.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"

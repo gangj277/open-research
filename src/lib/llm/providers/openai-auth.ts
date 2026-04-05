@@ -1,6 +1,7 @@
 import { costTracker } from "../cost-tracker";
 import { resolveOpenAIModel } from "../model-map";
 import { refreshAccessToken } from "@/lib/auth/openai-oauth";
+import { getPackageVersion } from "@/lib/cli/version";
 import { CODEX_RESPONSES_URL } from "../config";
 import type { LLMProvider } from "../provider";
 import type {
@@ -190,7 +191,7 @@ export function createOpenAIAuthProvider(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       originator: "open-research",
-      "User-Agent": `open-research/${process.env.npm_package_version ?? "0.1.0"} (${process.platform} ${process.arch})`,
+      "User-Agent": `open-research/${getPackageVersion()} (${process.platform} ${process.arch})`,
       session_id: sessionId,
     };
 

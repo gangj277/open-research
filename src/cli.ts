@@ -18,6 +18,7 @@ import { getOpenResearchSkillsDir } from "@/lib/fs/paths";
 import { openInEditor } from "@/lib/cli/editor";
 import { prompt } from "@/lib/cli/prompts";
 import { formatDateTime } from "@/lib/cli/format";
+import { getPackageVersion } from "@/lib/cli/version";
 import { ensureOpenResearchConfig } from "@/lib/config/store";
 import { App } from "@/tui/app";
 
@@ -25,6 +26,7 @@ const program = new Command();
 
 program
   .name("open-research")
+  .version(getPackageVersion())
   .description("Local-first research CLI powered by ChatGPT/Codex auth.")
   .argument("[workspacePath]", "Optional workspace path to open")
   .action(async (workspacePath?: string) => {

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { getPackageVersion } from "@/lib/cli/version";
 
 const PACKAGE_NAME = "open-research";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -9,14 +10,21 @@ const STATE_FILE = path.join(os.homedir(), ".open-research", "update-check.json"
 interface UpdateState {
   lastCheck: number;
   latestVersion: string | null;
+  checkedFromVersion: string | null;
 }
 
 async function readState(): Promise<UpdateState> {
   try {
     const raw = await fs.readFile(STATE_FILE, "utf8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Partial<UpdateState>;
+    return {
+      lastCheck: typeof parsed.lastCheck === "number" ? parsed.lastCheck : 0,
+      latestVersion: typeof parsed.latestVersion === "string" ? parsed.latestVersion : null,
+      checkedFromVersion:
+        typeof parsed.checkedFromVersion === "string" ? parsed.checkedFromVersion : null,
+    };
   } catch {
-    return { lastCheck: 0, latestVersion: null };
+    return { lastCheck: 0, latestVersion: null, checkedFromVersion: null };
   }
 }
 
@@ -26,24 +34,7 @@ async function writeState(state: UpdateState): Promise<void> {
 }
 
 function getCurrentVersion(): string {
-  // Try env var first (works with npm run dev)
-  if (process.env.npm_package_version) return process.env.npm_package_version;
-  // Read from the installed package.json on disk
-  try {
-    const fs = require("node:fs");
-    const path = require("node:path");
-    // Walk up from dist/cli.js to find package.json
-    let dir = __dirname || path.dirname(new URL(import.meta.url).pathname);
-    for (let i = 0; i < 5; i++) {
-      const pkgFile = path.join(dir, "package.json");
-      if (fs.existsSync(pkgFile)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
-        if (pkg.name === "open-research" && pkg.version) return pkg.version;
-      }
-      dir = path.dirname(dir);
-    }
-  } catch { /* ignore */ }
-  return "0.0.0";
+  return getPackageVersion();
 }
 
 async function fetchLatestVersion(): Promise<string | null> {
@@ -80,10 +71,14 @@ export async function checkForUpdate(): Promise<string | null> {
   try {
     const state = await readState();
     const now = Date.now();
+    const current = getCurrentVersion();
 
     // Don't check too frequently
-    if (now - state.lastCheck < CHECK_INTERVAL_MS && state.latestVersion) {
-      const current = getCurrentVersion();
+    if (
+      now - state.lastCheck < CHECK_INTERVAL_MS &&
+      state.latestVersion &&
+      state.checkedFromVersion === current
+    ) {
       if (isNewer(state.latestVersion, current)) {
         return `Update available: ${current} → ${state.latestVersion}. Run: npm update -g open-research`;
       }
@@ -92,10 +87,9 @@ export async function checkForUpdate(): Promise<string | null> {
 
     // Fetch latest version (non-blocking, with timeout)
     const latest = await fetchLatestVersion();
-    await writeState({ lastCheck: now, latestVersion: latest });
+    await writeState({ lastCheck: now, latestVersion: latest, checkedFromVersion: current });
 
     if (!latest) return null;
-    const current = getCurrentVersion();
     if (isNewer(latest, current)) {
       return `Update available: ${current} → ${latest}. Run: npm update -g open-research`;
     }

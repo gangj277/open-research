@@ -62,8 +62,14 @@ describe("context windows", () => {
     expect(getContextWindow("unknown-model")).toBe(128_000);
   });
 
-  test("compact threshold is 80% of context window", () => {
-    expect(getCompactThreshold("gpt-5.4")).toBe(Math.floor(272_000 * 0.8));
+  test("compact threshold is 250K for large-context models", () => {
+    // gpt-5.4 has 272K context — triggers at fixed 250K
+    expect(getCompactThreshold("gpt-5.4")).toBe(250_000);
+  });
+
+  test("compact threshold is 80% for smaller models", () => {
+    // gpt-4o has 128K context — triggers at 80% = 102,400
+    expect(getCompactThreshold("gpt-4o")).toBe(Math.floor(128_000 * 0.8));
   });
 });
 
@@ -122,23 +128,27 @@ describe("pruneToolOutputs", () => {
 describe("session usage tracking", () => {
   test("creates empty usage", () => {
     const usage = createSessionUsage();
-    expect(usage.totalTokens).toBe(0);
+    expect(usage.cumulative.total).toBe(0);
     expect(usage.compactionCount).toBe(0);
   });
 
-  test("updates from API response", () => {
+  test("updates from API response with detailed breakdown", () => {
     const usage = createSessionUsage();
     updateUsageFromApi(usage, { promptTokens: 100, completionTokens: 50, totalTokens: 150 });
+    expect(usage.cumulative.input).toBe(100);
+    expect(usage.cumulative.output).toBe(50);
+    expect(usage.cumulative.total).toBe(150);
+    expect(usage.lastTurn.total).toBe(150);
+    // Legacy compat
     expect(usage.inputTokens).toBe(100);
-    expect(usage.outputTokens).toBe(50);
     expect(usage.totalTokens).toBe(150);
-    expect(usage.lastTurnTokens).toBe(150);
 
-    // Second update accumulates
+    // Second update accumulates cumulative, overwrites lastTurn
     updateUsageFromApi(usage, { promptTokens: 200, completionTokens: 80, totalTokens: 280 });
-    expect(usage.inputTokens).toBe(300);
-    expect(usage.outputTokens).toBe(130);
-    expect(usage.totalTokens).toBe(430);
-    expect(usage.lastTurnTokens).toBe(280);
+    expect(usage.cumulative.input).toBe(300);
+    expect(usage.cumulative.output).toBe(130);
+    expect(usage.cumulative.total).toBe(430);
+    expect(usage.lastTurn.total).toBe(280);
+    expect(usage.lastTurn.input).toBe(200);
   });
 });

@@ -503,11 +503,15 @@ export function App({
       }
       case "cost": {
         const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+        const c = sessionTokens.cumulative;
         addSystemMessage("Session token usage:");
-        addSystemMessage(`  Input tokens:  ${k(sessionTokens.inputTokens)}`);
-        addSystemMessage(`  Output tokens: ${k(sessionTokens.outputTokens)}`);
-        addSystemMessage(`  Total tokens:  ${k(sessionTokens.totalTokens)}`);
-        addSystemMessage(`  Current context: ~${k(sessionTokens.estimatedCurrentTokens)}`);
+        addSystemMessage(`  Input:     ${k(c.input)} tokens`);
+        addSystemMessage(`  Output:    ${k(c.output)} tokens`);
+        if (c.reasoning > 0) addSystemMessage(`  Reasoning: ${k(c.reasoning)} tokens`);
+        if (c.cache.read > 0) addSystemMessage(`  Cache read:  ${k(c.cache.read)} tokens`);
+        if (c.cache.write > 0) addSystemMessage(`  Cache write: ${k(c.cache.write)} tokens`);
+        addSystemMessage(`  Total:     ${k(c.total)} tokens`);
+        addSystemMessage(`  Context:   ~${k(sessionTokens.estimatedCurrentTokens)} (current window)`);
         addSystemMessage(`  Compactions: ${sessionTokens.compactionCount}`);
         break;
       }

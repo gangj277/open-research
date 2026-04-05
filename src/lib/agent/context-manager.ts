@@ -55,15 +55,19 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 };
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
-const EFFECTIVE_PERCENT = 0.95;
-const COMPACT_THRESHOLD_PERCENT = 0.80; // Trigger earlier (80%) like Claude Code, not 90%
+const AUTO_COMPACT_TOKEN_LIMIT = 250_000; // Fixed trigger at 250K tokens
 
 export function getContextWindow(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 export function getCompactThreshold(model: string): number {
-  return Math.floor(getContextWindow(model) * COMPACT_THRESHOLD_PERCENT);
+  // For models with context > 250K, trigger at 250K
+  // For smaller models, trigger at 80% of their context window
+  const window = getContextWindow(model);
+  return window > AUTO_COMPACT_TOKEN_LIMIT
+    ? AUTO_COMPACT_TOKEN_LIMIT
+    : Math.floor(window * 0.80);
 }
 
 export function getEffectiveLimit(model: string): number {
@@ -72,23 +76,45 @@ export function getEffectiveLimit(model: string): number {
 
 // ── Token Usage Tracking ────────────────────────────────────────────────────
 
+export interface TokenBreakdown {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: { read: number; write: number };
+  total: number;
+}
+
 export interface SessionTokenUsage {
+  /** Cumulative tokens across all turns */
+  cumulative: TokenBreakdown;
+  /** Last turn's tokens (for context window calculation) */
+  lastTurn: TokenBreakdown;
+  /** Estimated current context window usage */
+  estimatedCurrentTokens: number;
+  /** Number of compactions performed */
+  compactionCount: number;
+
+  // Legacy compat — these map to cumulative fields
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
   lastTurnTokens: number;
-  estimatedCurrentTokens: number;
-  compactionCount: number;
+}
+
+function emptyBreakdown(): TokenBreakdown {
+  return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 }, total: 0 };
 }
 
 export function createSessionUsage(): SessionTokenUsage {
   return {
+    cumulative: emptyBreakdown(),
+    lastTurn: emptyBreakdown(),
+    estimatedCurrentTokens: 0,
+    compactionCount: 0,
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     lastTurnTokens: 0,
-    estimatedCurrentTokens: 0,
-    compactionCount: 0,
   };
 }
 
@@ -96,9 +122,24 @@ export function updateUsageFromApi(
   usage: SessionTokenUsage,
   apiUsage: { promptTokens: number; completionTokens: number; totalTokens: number }
 ): void {
-  usage.inputTokens += apiUsage.promptTokens;
-  usage.outputTokens += apiUsage.completionTokens;
-  usage.totalTokens += apiUsage.totalTokens;
+  // Update cumulative
+  usage.cumulative.input += apiUsage.promptTokens;
+  usage.cumulative.output += apiUsage.completionTokens;
+  usage.cumulative.total += apiUsage.totalTokens;
+
+  // Update last turn (overwrite — latest step is most accurate)
+  usage.lastTurn = {
+    input: apiUsage.promptTokens,
+    output: apiUsage.completionTokens,
+    reasoning: 0,
+    cache: { read: 0, write: 0 },
+    total: apiUsage.totalTokens,
+  };
+
+  // Legacy compat
+  usage.inputTokens = usage.cumulative.input;
+  usage.outputTokens = usage.cumulative.output;
+  usage.totalTokens = usage.cumulative.total;
   usage.lastTurnTokens = apiUsage.totalTokens;
 }
 

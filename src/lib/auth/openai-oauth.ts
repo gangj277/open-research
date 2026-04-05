@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "crypto";
 export const OPENAI_AUTH_URL = "https://auth.openai.com/oauth/authorize";
 export const OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-export const OPENAI_SCOPES = "openid profile email offline_access api.connectors.read api.connectors.invoke";
+export const OPENAI_SCOPES = "openid profile email offline_access";
 
 export function getRedirectUri(port: number): string {
   return `http://localhost:${port}/auth/callback`;
@@ -42,7 +42,7 @@ export function buildAuthorizationUrl(input: {
     code_challenge_method: "S256",
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",
-    originator: "codex_cli_rs",
+    originator: "open-research",
   });
 
   return `${OPENAI_AUTH_URL}?${params.toString()}`;

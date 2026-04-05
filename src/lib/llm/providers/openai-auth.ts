@@ -183,10 +183,15 @@ export function createOpenAIAuthProvider(
     return creds.accessToken;
   }
 
+  const sessionId = crypto.randomUUID();
+
   function buildHeaders(token: string): Record<string, string> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      originator: "open-research",
+      "User-Agent": `open-research/${process.env.npm_package_version ?? "0.1.0"} (${process.platform} ${process.arch})`,
+      session_id: sessionId,
     };
 
     if (creds.accountId) {

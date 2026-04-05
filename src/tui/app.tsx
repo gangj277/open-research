@@ -37,6 +37,7 @@ import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type A
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
 import { loadMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
+import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import type { ToolActivity } from "@/lib/agent/runtime";
 import {
   SLASH_COMMANDS,
@@ -153,6 +154,7 @@ export function App({
   const activityFrame = useAnimatedFrame(busy);
 
   const [agentQuestion, setAgentQuestion] = useState<AskUserPendingQuestion | null>(null);
+  const previewRef = useRef<PreviewServer | null>(null);
 
   const isHome = deferredMessages.length === 0 && !busy;
   const hasWorkspace = workspacePath !== null;
@@ -456,6 +458,31 @@ export function App({
         addSystemMessage("  a  accept next pending update");
         addSystemMessage("  r  reject next pending update");
         addSystemMessage("  Esc  unfocus prompt");
+        break;
+      }
+      case "preview": {
+        if (!args) {
+          addSystemMessage("Usage: /preview <path-to-tex-file>");
+          addSystemMessage("Example: /preview papers/draft.tex");
+          break;
+        }
+        const texPath = args.trim();
+        const resolvedTex = require("node:path").isAbsolute(texPath) ? texPath : require("node:path").resolve(workspacePath ?? process.cwd(), texPath);
+        try {
+          // Close existing preview if any
+          if (previewRef.current) {
+            previewRef.current.close();
+          }
+          const preview = await startPreviewServer(resolvedTex);
+          previewRef.current = preview;
+          addSystemMessage(`Live preview started at ${preview.url}`);
+          addSystemMessage("Auto-reloads when the file changes. Close with /preview stop");
+          // Open in browser
+          const openModule = await import("open");
+          await openModule.default(preview.url);
+        } catch (err) {
+          addSystemMessage(`Preview failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
         break;
       }
       case "memory": {

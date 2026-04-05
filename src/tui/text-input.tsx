@@ -202,11 +202,15 @@ export default function TextInput({
       }
       // ── Regular character input ──
       else if (!key.ctrl && !key.meta) {
-        nextValue =
-          originalValue.slice(0, cursorOffset) +
-          input +
-          originalValue.slice(cursorOffset);
-        nextCursor += input.length;
+        // Filter out escape sequence garbage (e.g. kitty protocol responses)
+        const clean = input.replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z]/g, "").replace(/[\x00-\x08\x0e-\x1f]/g, "");
+        if (clean) {
+          nextValue =
+            originalValue.slice(0, cursorOffset) +
+            clean +
+            originalValue.slice(cursorOffset);
+          nextCursor += clean.length;
+        }
       }
       // Ignore other ctrl/meta combos we don't handle
 

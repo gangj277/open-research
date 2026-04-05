@@ -43,7 +43,7 @@ program
       }),
       {
         kittyKeyboard: {
-          mode: "auto",
+          mode: "enabled",
           flags: ["disambiguateEscapeCodes", "reportAlternateKeys"],
         },
       }

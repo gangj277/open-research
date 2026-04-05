@@ -56,7 +56,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const EFFECTIVE_PERCENT = 0.95;
-const COMPACT_THRESHOLD_PERCENT = 0.90;
+const COMPACT_THRESHOLD_PERCENT = 0.80; // Trigger earlier (80%) like Claude Code, not 90%
 
 export function getContextWindow(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
@@ -73,17 +73,11 @@ export function getEffectiveLimit(model: string): number {
 // ── Token Usage Tracking ────────────────────────────────────────────────────
 
 export interface SessionTokenUsage {
-  /** Cumulative input tokens across all turns (from API responses) */
   inputTokens: number;
-  /** Cumulative output tokens across all turns */
   outputTokens: number;
-  /** Cumulative total tokens */
   totalTokens: number;
-  /** Last turn's usage */
   lastTurnTokens: number;
-  /** Estimated current conversation tokens (local estimation) */
   estimatedCurrentTokens: number;
-  /** Number of compactions performed */
   compactionCount: number;
 }
 
@@ -108,25 +102,40 @@ export function updateUsageFromApi(
   usage.lastTurnTokens = apiUsage.totalTokens;
 }
 
-// ── Context Compaction ──────────────────────────────────────────────────────
+// ── Phase 1: Prune Tool Outputs ─────────────────────────────────────────────
+// Modeled after OpenCode's prune step:
+// - Walk backwards from newest messages
+// - Protect the last 40K tokens of tool outputs
+// - Skip the 2 most recent user turns entirely
+// - Only prune if savings exceed 20K tokens
 
-const PRUNE_PROTECT_TOKENS = 40_000; // Keep last 40K tokens of tool calls
-const PRUNE_MIN_SAVINGS = 20_000;    // Only prune if saving > 20K tokens
+const PRUNE_PROTECT_TOKENS = 40_000;
+const PRUNE_MIN_SAVINGS = 20_000;
+const PRUNE_SKIP_RECENT_USER_TURNS = 2;
 
-/**
- * Phase 1: Prune old tool call outputs. Keeps the last PRUNE_PROTECT_TOKENS
- * worth of tool messages, replaces older ones with "[output pruned]".
- */
 export function pruneToolOutputs(messages: LLMMessage[]): { messages: LLMMessage[]; savedTokens: number } {
-  // Find all tool messages (newest last)
+  // Find indices of user messages (to skip recent turns)
+  const userIndices: number[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") userIndices.push(i);
+  }
+
+  // The boundary: don't touch anything at or after the Nth most recent user message
+  const protectBoundary = userIndices.length >= PRUNE_SKIP_RECENT_USER_TURNS
+    ? userIndices[PRUNE_SKIP_RECENT_USER_TURNS - 1]
+    : 0;
+
+  // Find all tool messages that are candidates for pruning (before the boundary)
   const toolIndices: number[] = [];
   for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "tool") toolIndices.push(i);
+    if (messages[i].role === "tool" && i < protectBoundary) {
+      toolIndices.push(i);
+    }
   }
 
   if (toolIndices.length === 0) return { messages, savedTokens: 0 };
 
-  // Calculate tokens from the end, find the cutoff
+  // Walk backwards from the newest pruneable tool output, protect last PRUNE_PROTECT_TOKENS
   let protectedTokens = 0;
   let cutoffIdx = toolIndices.length;
   for (let i = toolIndices.length - 1; i >= 0; i--) {
@@ -139,91 +148,150 @@ export function pruneToolOutputs(messages: LLMMessage[]): { messages: LLMMessage
     protectedTokens += tokens;
   }
 
-  // Prune messages before cutoff
+  // Replace old tool outputs with a stub
   let savedTokens = 0;
   const result = [...messages];
   for (let i = 0; i < cutoffIdx; i++) {
     const idx = toolIndices[i];
     const msg = result[idx];
     const oldTokens = estimateMessageTokens(msg);
-    const pruned = "[output pruned — use read_file to re-read if needed]";
-    savedTokens += oldTokens - estimateTokens(pruned);
-    result[idx] = { ...msg, content: pruned };
+    const stub = "[output pruned — use read_file to re-read if needed]";
+    savedTokens += oldTokens - estimateTokens(stub);
+    result[idx] = { ...msg, content: stub };
   }
 
   if (savedTokens < PRUNE_MIN_SAVINGS) {
-    return { messages, savedTokens: 0 }; // Not worth pruning
+    return { messages, savedTokens: 0 };
   }
 
   return { messages: result, savedTokens };
 }
 
+// ── Phase 2: Summarize Conversation ─────────────────────────────────────────
+// Structured template from OpenCode + Claude Code patterns:
+// Goal / Instructions / Discoveries / Accomplished / Relevant Files / Next Steps
+
+const COMPACTION_SYSTEM_PROMPT = `You are a conversation summarizer for a research agent. Your job is to create a handoff summary that another agent instance can use to seamlessly continue the work.
+
+Do not respond to any questions in the conversation. Only output the summary.
+Respond in the same language the user used.`;
+
+const COMPACTION_USER_TEMPLATE = `Provide a detailed summary of our conversation above for handoff to another agent that will continue the work.
+
+Stick to this template:
+
+## Goal
+[What is the user trying to accomplish? Be specific.]
+
+## Instructions
+- [Important instructions or preferences the user gave]
+- [Research methodology constraints or requirements]
+- [If there is a research charter or plan, summarize its key points]
+
+## Discoveries
+- [Key findings from paper searches, data analysis, or experiments]
+- [Important facts, numbers, or evidence discovered]
+- [Any surprising or contradicting results]
+
+## Accomplished
+- [What work has been completed]
+- [What is currently in progress]
+- [What remains to be done]
+
+## Relevant Files
+[List workspace files that were read, created, or modified. Include what each contains.]
+- path/to/file.md — description of contents
+- experiments/script.py — what it does and its results
+
+## Active Context
+- [Current research question or hypothesis being investigated]
+- [Which skills are active]
+- [Any pending user decisions or questions]
+
+## Next Steps
+1. [Most immediate next action]
+2. [Following action]
+3. [And so on]
+
+{CUSTOM_INSTRUCTIONS}`;
+
 /**
- * Phase 2: Summarize the conversation into a compact handoff.
- * Replaces all messages (except system) with a summary.
+ * Phase 2: Summarize the conversation into a structured handoff.
+ * Preserves the system prompt and produces a single summary message.
  */
 export async function compactConversation(
   messages: LLMMessage[],
   provider: LLMProvider,
   model: string,
+  customInstructions?: string,
   signal?: AbortSignal
 ): Promise<LLMMessage[]> {
-  // Extract the system prompt (always keep it)
   const systemMsg = messages.find((m) => m.role === "system");
   const conversationMsgs = messages.filter((m) => m.role !== "system");
 
-  // Build the conversation text for summarization
+  // Build conversation text — include role labels, truncate very long tool outputs
   const conversationText = conversationMsgs
     .map((m) => {
       const role = m.role === "assistant" ? "Agent" : m.role === "user" ? "User" : "Tool";
-      const content = typeof m.content === "string"
-        ? m.content
-        : m.content
-          ? JSON.stringify(m.content)
-          : "[tool calls]";
-      return `[${role}]: ${content?.slice(0, 2000)}`;
+      let content: string;
+      if (typeof m.content === "string") {
+        // Truncate individual messages to 3K chars for the summary prompt
+        content = m.content.length > 3000 ? m.content.slice(0, 3000) + "\n[... truncated]" : m.content;
+      } else if (m.content) {
+        content = JSON.stringify(m.content).slice(0, 1000);
+      } else if (m.tool_calls?.length) {
+        content = m.tool_calls.map((tc) => `[tool: ${tc.function.name}]`).join(", ");
+      } else {
+        content = "[empty]";
+      }
+      return `[${role}]: ${content}`;
     })
     .join("\n\n");
 
-  // Summarize using the LLM
+  // Build the summarization prompt
+  const customBlock = customInstructions
+    ? `\n\nAdditional instructions: ${customInstructions}`
+    : "";
+  const userPrompt = COMPACTION_USER_TEMPLATE.replace("{CUSTOM_INSTRUCTIONS}", customBlock);
+
+  // Use a smaller/cheaper model for compaction if available
+  const compactionModel = model.includes("5.4") ? "gpt-5.4-mini" : model;
+
   const summaryResponse = await provider.callLLM({
     messages: [
-      {
-        role: "system",
-        content:
-          "You are performing a CONTEXT COMPACTION. Summarize the conversation into a concise handoff document. Include:\n" +
-          "1. **Goal**: What the user is trying to accomplish\n" +
-          "2. **Key discoveries**: Important findings, file paths, data points\n" +
-          "3. **Work completed**: What has been done so far\n" +
-          "4. **Next steps**: What should happen next\n" +
-          "5. **Active files**: Key file paths and their contents summary\n\n" +
-          "Be concise but preserve all actionable information. This summary will replace the full conversation history.",
-      },
+      { role: "system", content: COMPACTION_SYSTEM_PROMPT },
       {
         role: "user",
-        content: `Summarize this conversation:\n\n${conversationText.slice(0, 100_000)}`,
+        content: `Here is the conversation to summarize:\n\n${conversationText.slice(0, 120_000)}\n\n---\n\n${userPrompt}`,
       },
     ],
-    model,
+    model: compactionModel,
     maxTokens: 4096,
   });
 
   // Build compacted message array
   const compacted: LLMMessage[] = [];
   if (systemMsg) compacted.push(systemMsg);
+
+  // The summary becomes a user message + assistant acknowledgment
+  // This pattern ensures the model treats the summary as established context
   compacted.push({
     role: "user",
-    content:
-      "[Context compacted — previous conversation summarized below]\n\n" +
-      summaryResponse.content,
+    content: "What have we accomplished so far in this research session?",
+  });
+  compacted.push({
+    role: "assistant",
+    content: summaryResponse.content,
   });
 
   return compacted;
 }
 
+// ── Orchestrator ────────────────────────────────────────────────────────────
+
 /**
- * Check if compaction is needed and perform it.
- * Returns the (possibly compacted) messages array.
+ * Check if compaction is needed and perform it (auto-compact).
+ * Two-phase: prune old tool outputs first, then summarize if still over threshold.
  */
 export async function maybeCompact(
   messages: LLMMessage[],
@@ -251,7 +319,34 @@ export async function maybeCompact(
   }
 
   // Phase 2: Full summarization
-  const compacted = await compactConversation(pruned, provider, model, signal);
+  const compacted = await compactConversation(pruned, provider, model, undefined, signal);
+  usage.estimatedCurrentTokens = estimateConversationTokens(compacted);
+  usage.compactionCount++;
+
+  return { messages: compacted, didCompact: true };
+}
+
+/**
+ * Manual compaction — triggered by /compact command.
+ * Supports custom instructions like "/compact keep the statistical findings".
+ */
+export async function manualCompact(
+  messages: LLMMessage[],
+  model: string,
+  provider: LLMProvider,
+  usage: SessionTokenUsage,
+  customInstructions?: string,
+  signal?: AbortSignal
+): Promise<{ messages: LLMMessage[]; didCompact: boolean }> {
+  if (messages.length <= 2) {
+    return { messages, didCompact: false };
+  }
+
+  // Always prune first
+  const { messages: pruned } = pruneToolOutputs(messages);
+
+  // Then summarize with custom instructions
+  const compacted = await compactConversation(pruned, provider, model, customInstructions, signal);
   usage.estimatedCurrentTokens = estimateConversationTokens(compacted);
   usage.compactionCount++;
 

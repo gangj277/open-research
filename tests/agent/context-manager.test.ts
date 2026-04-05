@@ -62,25 +62,35 @@ describe("context windows", () => {
     expect(getContextWindow("unknown-model")).toBe(128_000);
   });
 
-  test("compact threshold is 90% of context window", () => {
-    expect(getCompactThreshold("gpt-5.4")).toBe(Math.floor(272_000 * 0.9));
+  test("compact threshold is 80% of context window", () => {
+    expect(getCompactThreshold("gpt-5.4")).toBe(Math.floor(272_000 * 0.8));
   });
 });
 
 describe("pruneToolOutputs", () => {
   test("prunes old tool outputs while preserving recent ones", () => {
-    // Create messages with tool outputs of known sizes
-    // Each ~50K tokens → 4 of them = ~200K, well over PRUNE_PROTECT (40K)
+    // Each ~50K tokens → well over PRUNE_PROTECT (40K)
+    // Need 3+ user turns so the prune logic can skip the last 2
     const bigContent = "x".repeat(200_000);
     const messages: LLMMessage[] = [
       { role: "system", content: "You are a helper." },
-      { role: "user", content: "Do something." },
+      // Turn 1 (old — pruneable)
+      { role: "user", content: "First question." },
       { role: "assistant", content: null, tool_calls: [{ id: "1", type: "function", function: { name: "read_file", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "1", content: bigContent },
+      { role: "assistant", content: "First answer." },
+      // Turn 2 (old — pruneable)
+      { role: "user", content: "Second question." },
       { role: "assistant", content: null, tool_calls: [{ id: "2", type: "function", function: { name: "read_file", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "2", content: bigContent },
+      { role: "assistant", content: "Second answer." },
+      // Turn 3 (recent — protected)
+      { role: "user", content: "Third question." },
       { role: "assistant", content: null, tool_calls: [{ id: "3", type: "function", function: { name: "read_file", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "3", content: bigContent },
+      { role: "assistant", content: "Third answer." },
+      // Turn 4 (most recent — protected)
+      { role: "user", content: "Fourth question." },
       { role: "assistant", content: null, tool_calls: [{ id: "4", type: "function", function: { name: "read_file", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "4", content: bigContent },
     ];

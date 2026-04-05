@@ -43,6 +43,7 @@ import {
   getContextWindow,
   getCompactThreshold,
   maybeCompact as doCompact,
+  manualCompact,
 } from "@/lib/agent/context-manager";
 import type { ToolActivity } from "@/lib/agent/runtime";
 import {
@@ -471,23 +472,27 @@ export function App({
           addSystemMessage("Nothing to compact — conversation is empty.");
           break;
         }
-        addSystemMessage("Compacting conversation...");
+        const customInstructions = args || undefined;
+        addSystemMessage(customInstructions
+          ? `Compacting conversation (preserving: ${customInstructions})...`
+          : "Compacting conversation...");
         setBusy(true);
         try {
-          // maybeCompact imported as doCompact above
           const provider = await createProviderFromStoredAuth({ homeDir });
           const msgs = [{ role: "system" as const, content: "compaction" }, ...history.map((m) => m as any)];
-          const { messages: compacted, didCompact } = await doCompact(
-            msgs, config?.defaults.model ?? "gpt-5.4", provider, sessionTokens
+          const { messages: compacted, didCompact } = await manualCompact(
+            msgs, config?.defaults.model ?? "gpt-5.4", provider, sessionTokens, customInstructions
           );
           if (didCompact) {
             const newHistory = compacted.filter((m: any) => m.role !== "system").map((m: any) => ({
               role: m.role, content: m.content,
             }));
             setHistory(newHistory as any);
+            const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+            setTokenDisplay(`${k(sessionTokens.estimatedCurrentTokens)} ctx · ${k(sessionTokens.totalTokens)} total`);
             addSystemMessage(`Compacted. Context reduced to ~${Math.round(sessionTokens.estimatedCurrentTokens / 1000)}k tokens.`);
           } else {
-            addSystemMessage("Context is already within limits — no compaction needed.");
+            addSystemMessage("Nothing to compact — conversation too short.");
           }
         } catch (err) {
           addSystemMessage(`Compaction failed: ${err instanceof Error ? err.message : String(err)}`);

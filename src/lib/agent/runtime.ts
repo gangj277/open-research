@@ -234,7 +234,7 @@ export async function runAgentTurn(input: {
         userMessage: input.message,
         agentResponse: fullText,
         provider: input.provider,
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         homeDir: input.homeDir,
       }).then((stored) => {
         if (stored.length > 0) {

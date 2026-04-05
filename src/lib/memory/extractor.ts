@@ -73,7 +73,7 @@ export async function extractMemories(input: {
         { role: "system", content: prompt },
         { role: "user", content: conversationSnippet },
       ],
-      model: input.model ?? "gpt-4o-mini",
+      model: input.model ?? "gpt-5.4-mini",
       maxTokens: 500,
       temperature: 0,
     });

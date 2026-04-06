@@ -205,12 +205,13 @@ Replaces keyword matching in the scaffolding layer:
 
 ```
 Relevance Agent (gpt-5.4-mini)
-  Input: user message + compact note list (ID + first 60 chars + kind, ~100 notes max)
+  Input: user message + note list (ID + full content + kind, ~100 notes max)
   Output: array of relevant note IDs (top 10-15)
   Latency: <1 second
+  Skipped for: slash commands, short messages, greetings, empty ontology
 ```
 
-Pre-filter before sending to relevance agent: if ontology has 500+ notes, first filter by kind or recency to get ~100 candidates, then send those to the agent for semantic selection.
+Notes are 1-3 sentences — full content is fine (~4K tokens for 100 notes). Pre-filter before sending: if ontology has 500+ notes, filter by kind or recency to get ~100 candidates.
 
 ### Write Serialization — No Race Conditions
 

@@ -48,6 +48,22 @@ The scaffolding layer does NOT replace querying. It **orients** the main agent �
 
 Think of it as a table of contents, not the full book.
 
+### Pre-filter: Skip Non-Research Messages
+
+The relevance agent costs ~1 second + an API call. Don't waste it on messages that obviously aren't research:
+
+```typescript
+function shouldRunRelevanceAgent(message: string, ontology: Ontology): boolean {
+  if (ontology.notes.length === 0) return false;     // Empty ontology — nothing to match
+  if (message.startsWith("/")) return false;           // Slash commands
+  if (message.length < 15) return false;               // "yes", "thanks", "ok"
+  if (/^(hi|hello|hey|thanks|thank you|ok|yes|no)\b/i.test(message)) return false;
+  return true;
+}
+```
+
+When skipped, the scaffolding layer injects nothing. The main agent can still call `ontology_status` or `query_ontology` if it decides it needs ontology context.
+
 ### Step 1: Relevance Agent (Semantic Matching)
 
 Keyword matching fails for research. "Computational complexity of self-attention" should match "quadratic scaling in dot-product attention" — but keyword overlap is near zero. The relevance agent uses gpt-5.4-mini to understand semantic meaning.
@@ -57,17 +73,19 @@ Relevance Agent (gpt-5.4-mini)
 
 Input:
   - User message: "Write about the computational complexity of self-attention"
-  - Compact note list: ID + first 60 chars of content + kind
-    [abc123] "Transformers outperform RNNs on long-range..." (claim)
-    [def456] "Table 3: 12% BLEU improvement, p<0.01..." (finding)
-    [ghi789] "Quadratic scaling in dot-product attention..." (finding)
-    [jkl012] "Does efficiency hold for >100K tokens?..." (question)
+  - Note list: ID + full content + kind
+    [abc123] "Transformers outperform RNNs on long-range dependency tasks" (claim)
+    [def456] "Table 3: 12% BLEU improvement, p<0.01, on WMT14 EN-DE" (finding)
+    [ghi789] "Quadratic scaling in dot-product attention limits sequence length" (finding)
+    [jkl012] "Does efficiency hold for >100K tokens?" (question)
     ... (~100 notes max)
 
 Output: ["abc123", "ghi789", "jkl012"]  — relevant note IDs
 
 Latency: <1 second
 ```
+
+Notes are typically 1-3 sentences — full content is fine to send. At 100 notes × ~150 chars each ≈ 4K tokens, well within gpt-5.4-mini's budget.
 
 **System prompt:**
 ```
@@ -153,13 +171,23 @@ The main agent shouldn't parse raw graph data. It should ask a question and get 
 
 ### How Search Works Inside the Query Agent
 
-`search_notes` is keyword-based (tokenize → word overlap scoring) with **multi-query support** (OR logic). It doesn't understand semantics — but the query agent does. The pattern:
+`search_notes` combines **structural filters** (kind, confidence, edge presence/absence) with **BM25 text ranking**. Most researcher questions are structural — the query agent picks the right approach:
 
-1. Query agent casts a wide net in one call: `search_notes(["transformer efficiency", "attention scaling", "BLEU improvement"])` → gets keyword matches across all phrasings
-2. Once any relevant node is found, agent calls `get_connections` to discover the neighborhood
-3. Agent follows edges to find notes that keyword search would never have matched
+```
+"What claims have no evidence?"
+  → search_notes({ kind: "claim", missingEdge: "supports" })
+  → Pure structural filter. No text search. Instant.
 
-One tool call with 3 synonymous phrases replaces 3 sequential calls. The LLM is the semantic layer — it picks the right phrasings. `search_notes` is just a fast candidate retriever. See [02-agent-pipeline.md](./02-agent-pipeline.md#search_notes--implementation-detail) for the full implementation.
+"What contradicts our efficiency claim?"
+  → search_notes({ queries: ["efficiency"], kind: "claim" })
+  → BM25 finds the claim, then get_connections traverses contradicts edges.
+
+"Anything about attention mechanisms?"
+  → search_notes({ queries: ["attention mechanism", "self-attention", "dot-product"] })
+  → BM25 ranks candidates across all phrasings in one call.
+```
+
+Text search is the **fallback**, not the primary path. Most queries either start from a known node (via scaffolding) or use structural filters. The LLM is the semantic layer — it picks the right phrasings for BM25 and follows edges to discover notes that keyword search would miss. See [02-agent-pipeline.md](./02-agent-pipeline.md#search_notes--implementation-detail) for the full implementation.
 
 ### Main Agent's Tools
 
@@ -182,8 +210,8 @@ Main Agent calls: query_ontology("what contradicts our efficiency claim")
         ▼
 Query Agent (gpt-5.4-mini) starts
         │
-        ├─ search_notes(["efficiency claim", "scaling performance"], kind: "claim")
-        │   → finds claim node [id: abc123]
+        ├─ search_notes({ queries: ["efficiency claim", "scaling performance"], kind: "claim" })
+        │   → BM25 ranks candidates, finds claim node [id: abc123]
         │
         ├─ get_connections("abc123", depth: 2)
         │   → sees: 3 supports edges, 1 contradicts edge
@@ -235,8 +263,11 @@ Open questions: 5
 You are an ontology query agent. You receive a research question and
 have tools to read a project ontology. Your job:
 
-1. Use search_notes to find relevant nodes
-2. Use get_connections to understand how they relate
+1. Choose the right search strategy:
+   - Structural queries ("unsupported claims", "open questions"): use filters (kind, missingEdge)
+   - Specific entities ("Smith 2024", "efficiency claim"): use text queries + kind filter
+   - Broad topics ("attention mechanisms"): use multiple synonym phrases in queries
+2. Use get_connections to traverse from found nodes — follow edges to discover related notes
 3. Use get_note to read full details when needed
 4. Synthesize your findings into a clear, informative answer
 
@@ -269,7 +300,7 @@ Use query_ontology to get full details.
 - Calls `query_ontology("full evidence for the transformer efficiency claim")`
 
 **3. Query agent runs:**
-- `search_notes(["transformer efficiency", "attention cost"], kind: "claim")` → finds the claim
+- `search_notes({ queries: ["transformer efficiency", "attention cost"], kind: "claim" })` → finds the claim
 - `get_connections(claimId, depth: 2)` → gets all supports + contradicts
 - `get_note` on each connected finding → reads full details
 - Returns: "The claim has 3 supporting findings: Smith 2024 Table 3 (12% BLEU improvement), Park 2025 Table 5 (linear attention matches quadratic up to 50K), your experiment #3. One contradiction: Chen 2023 Section 5 found opposite scaling at 10x data. The contradiction context suggests dataset-size dependency as the likely explanation."

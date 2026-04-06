@@ -201,11 +201,15 @@ get_note: {
 // Returns: full Note object (content, kind, confidence, edges, meta)
 
 search_notes: {
-  queries: string[];         // Multiple search phrases (OR logic) — agent can try synonyms in one call
+  queries?: string[];        // Text search phrases (OR logic) — optional, can filter without text
   kind?: NoteKind;           // Filter by kind
+  confidence?: Confidence;   // Filter by confidence level
+  hasEdge?: EdgeRelation;    // Must have at least one edge of this relation type
+  missingEdge?: EdgeRelation;// Must NOT have any edges of this relation type
   limit?: number;            // Max results (default: 10)
 }
-// Returns: array of matching Notes with their edges, deduplicated across queries
+// Returns: array of matching Notes with their edges
+// At least one of queries/kind/confidence/hasEdge/missingEdge must be provided
 
 get_connections: {
   noteId: string;
@@ -269,47 +273,148 @@ merge_notes: {
 
 ### `search_notes` — Implementation Detail
 
-`search_notes` is the most critical read tool. Both the ontology manager (for dedup: "does this note already exist?") and the query agent (for retrieval: "find notes about X") depend on it. Here's how it actually works.
+`search_notes` is the most critical read tool. Both the ontology manager (for dedup) and the query agent (for retrieval) depend on it.
 
-**The key insight:** `search_notes` doesn't need to be semantically smart. It's always called by an LLM agent — the ontology manager (gpt-5.4) or query agent (gpt-5.4-mini). The LLM handles semantic understanding. `search_notes` just needs to return reasonable candidates.
+#### First Principle: Why Search Exists
 
-**Algorithm: keyword scoring with source-level dedup shortcuts**
+Search has exactly one job: **find a starting node when you don't already have one.** Once you have any entry point into the graph, everything else is traversal via `get_connections`. Most researcher questions are actually structural — "what contradicts X?", "what's unsupported?", "what came from this paper?" — and those are answered by edge traversal and filters, not text search.
+
+This means `search_notes` combines two capabilities:
+1. **Structural filters** — narrow by kind, confidence, edge presence/absence (instant, deterministic)
+2. **BM25 text ranking** — rank remaining candidates by text relevance (fast, ~50 lines of code)
+
+The LLM agent picks the right combination per query. Structural queries skip text search entirely.
+
+#### How the Agent Uses Search
+
+```
+"What contradicts our efficiency claim?"
+  → search_notes({ queries: ["efficiency"], kind: "claim" })     — find the claim
+  → get_connections(claimId)                                      — traverse contradicts edges
+  → No text search needed for the actual answer
+
+"What claims have no evidence?"
+  → search_notes({ kind: "claim", missingEdge: "supports" })     — pure structural, no text
+  → Done. No BM25 needed at all.
+
+"Anything about attention mechanisms?"
+  → search_notes({ queries: ["attention mechanism", "self-attention", "dot-product attention"] })
+  → BM25 ranks candidates, agent explores from best matches
+
+"Findings from Smith 2024"
+  → search_notes({ queries: ["Smith 2024"], kind: "source" })    — find source by metadata
+  → get_connections(sourceId)                                     — traverse derived-from edges
+```
+
+#### Algorithm: Structural Filter + BM25 Scoring
 
 ```typescript
 // src/lib/ontology/read-tools.ts
 
-function searchNotes(
-  ontology: Ontology,
-  queries: string[],          // OR logic — results from all queries merged
-  kind?: NoteKind,
-  limit: number = 10
-): Note[] {
-  // 1. Tokenize each query phrase separately
+interface SearchParams {
+  queries?: string[];
+  kind?: NoteKind;
+  confidence?: Confidence;
+  hasEdge?: EdgeRelation;
+  missingEdge?: EdgeRelation;
+  limit?: number;
+}
+
+function searchNotes(ontology: Ontology, params: SearchParams): Note[] {
+  const { queries, kind, confidence, hasEdge, missingEdge, limit = 10 } = params;
+
+  // ── Phase 1: Structural filters (instant, deterministic) ──────────
+
+  let candidates = ontology.notes;
+
+  if (kind) {
+    candidates = candidates.filter(n => n.kind === kind);
+  }
+  if (confidence) {
+    candidates = candidates.filter(n => n.confidence === confidence);
+  }
+  if (hasEdge) {
+    candidates = candidates.filter(n =>
+      n.edges.some(e => e.relation === hasEdge) ||
+      // Check reverse: other notes with mutual edges pointing to this note
+      ontology.notes.some(other =>
+        other.edges.some(e =>
+          e.targetId === n.id && e.relation === hasEdge && e.direction === "mutual"
+        )
+      )
+    );
+  }
+  if (missingEdge) {
+    candidates = candidates.filter(n =>
+      !n.edges.some(e => e.relation === missingEdge) &&
+      !ontology.notes.some(other =>
+        other.edges.some(e =>
+          e.targetId === n.id && e.relation === missingEdge && e.direction === "mutual"
+        )
+      )
+    );
+  }
+
+  // ── Phase 2: BM25 text ranking (only if queries provided) ────────
+
+  if (!queries || queries.length === 0) {
+    // No text search — return filtered candidates by recency
+    return candidates
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit);
+  }
+
+  // Tokenize all query phrases
   const queryTokenSets = queries.map(q => tokenize(q));
-  // e.g., [["transformer", "efficiency"], ["attention", "scaling"], ["bleu", "improvement"]]
 
-  // 2. Filter by kind if specified
-  const candidates = kind
-    ? ontology.notes.filter(n => n.kind === kind)
-    : ontology.notes;
+  // Precompute corpus stats for BM25
+  const avgDocLen = candidates.reduce((sum, n) => sum + tokenize(n.content).length, 0)
+    / Math.max(candidates.length, 1);
+  const N = candidates.length;
 
-  // 3. Score each candidate — best score across all query phrases wins
+  // Build document frequency map: token → how many candidates contain it
+  const df = new Map<string, number>();
+  for (const note of candidates) {
+    const uniqueTokens = new Set(tokenize(note.content));
+    for (const token of uniqueTokens) {
+      df.set(token, (df.get(token) ?? 0) + 1);
+    }
+  }
+
+  // BM25 parameters
+  const k1 = 1.2;   // Term frequency saturation
+  const b = 0.75;    // Length normalization
+
   const scored = candidates.map(note => {
     const noteTokens = tokenize(note.content);
-    
+    const docLen = noteTokens.length;
+
+    // Count term frequencies in this note
+    const tf = new Map<string, number>();
+    for (const token of noteTokens) {
+      tf.set(token, (tf.get(token) ?? 0) + 1);
+    }
+
     // Score against each query phrase, take the best
-    let bestScore = 0;
+    let bestBM25 = 0;
     for (const queryTokens of queryTokenSets) {
-      let matches = 0;
+      let score = 0;
       for (const qt of queryTokens) {
-        if (noteTokens.some(nt => nt.includes(qt) || qt.includes(nt))) {
-          matches++;
-        }
+        const termFreq = tf.get(qt) ?? 0;
+        const docFreq = df.get(qt) ?? 0;
+
+        if (termFreq === 0) continue;
+
+        // IDF: rare terms score higher
+        const idf = Math.log((N - docFreq + 0.5) / (docFreq + 0.5) + 1);
+
+        // TF with saturation + length normalization
+        const tfNorm = (termFreq * (k1 + 1))
+          / (termFreq + k1 * (1 - b + b * docLen / avgDocLen));
+
+        score += idf * tfNorm;
       }
-      const overlapScore = queryTokens.length > 0
-        ? matches / queryTokens.length
-        : 0;
-      bestScore = Math.max(bestScore, overlapScore);
+      bestBM25 = Math.max(bestBM25, score);
     }
 
     // Source metadata bonus: match against authors, year, venue
@@ -317,39 +422,41 @@ function searchNotes(
     if (note.kind === "source" && note.meta) {
       const metaText = [note.meta.authors, note.meta.venue, note.meta.year?.toString()]
         .filter(Boolean).join(" ");
-      const metaTokens = tokenize(metaText);
+      const metaTokens = new Set(tokenize(metaText));
       for (const queryTokens of queryTokenSets) {
-        const metaMatches = queryTokens.filter(qt =>
-          metaTokens.some(mt => mt.includes(qt) || qt.includes(mt))
-        ).length;
-        metaBonus = Math.max(metaBonus, metaMatches * 0.3);
+        const metaHits = queryTokens.filter(qt => metaTokens.has(qt)).length;
+        metaBonus = Math.max(metaBonus, metaHits * 0.5);
       }
     }
 
-    return { note, score: bestScore + metaBonus };
+    return { note, score: bestBM25 + metaBonus };
   });
 
-  // 4. Return top results above threshold, deduplicated (each note appears once)
   return scored
-    .filter(s => s.score > 0.1)
+    .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(s => s.note);
 }
 ```
 
-**Why keyword matching is good enough:**
+#### Why BM25 Over Simple Word Overlap
 
-The LLM agent calling `search_notes` compensates for its limitations:
+BM25 is the ranking algorithm behind Elasticsearch and Lucene. Three properties that matter for research notes:
 
-1. **Multi-query synonyms in one call.** The agent can cast a wide net: `search_notes(["transformer efficiency", "attention scaling", "BLEU improvement"])`. One tool call covers multiple phrasings. If the note says "quadratic attention cost," the third query might miss but the second one hits. No need for multiple round-trips.
+| Property | What it does | Why it matters |
+|----------|-------------|----------------|
+| **IDF** (Inverse Document Frequency) | Rare terms score higher than common ones | "quadratic" in 3/200 notes is a strong signal. "model" in 150/200 is noise. Word overlap treats them equally. |
+| **TF saturation** | First occurrence matters most, diminishing returns after | A note mentioning "efficiency" 10 times isn't 10x more relevant than one mentioning it once. Word overlap can't express this. |
+| **Length normalization** | Short documents that match score higher | A 20-word finding that matches is more relevant than a 200-word insight that mentions the term in passing. Word overlap ignores document length. |
 
-2. **Graph traversal as fallback.** If search finds one relevant node, the agent calls `get_connections` to discover neighbors. Even if search missed "quadratic scaling," finding any related note and following edges will reach it.
+Zero dependencies, ~50 lines, <1ms for 500 notes. Still keyword-based — the LLM agent handles semantic understanding via multi-query synonyms and graph traversal.
 
-3. **Dedup by identity, not semantics.** For sources specifically, duplicate detection doesn't need keyword matching at all — match on DOI, URL, or normalized title:
+#### Source Dedup: Identity Match, Not Text Search
+
+For sources specifically, dedup doesn't need text search at all — match on structured identity:
 
 ```typescript
-// Source-level dedup: exact identity match before keyword search
 function findExistingSource(ontology: Ontology, meta: SourceMeta): Note | null {
   return ontology.notes.find(n => {
     if (n.kind !== "source" || !n.meta) return false;
@@ -364,12 +471,20 @@ function findExistingSource(ontology: Ontology, meta: SourceMeta): Note | null {
 }
 ```
 
-**What search_notes is NOT:**
-- Not embedding-based (no vector store needed at our scale)
-- Not LLM-powered (that would make every search a separate API call)
-- Not the semantic layer (the calling agent handles semantic interpretation)
+#### The Four Layers of "Search"
 
-**Scale:** At 50-500 notes, scanning all notes per search is <1ms. No index needed. If the ontology grows past ~2000 notes, add a simple inverted index (token → noteId set) for faster lookup.
+No single algorithm makes search smart. The system is smart because four layers compensate for each other:
+
+| Layer | What it does | Handles |
+|-------|-------------|---------|
+| **Structural filters** | Kind, confidence, edge presence/absence | "Unsupported claims", "all questions", "findings without sources" |
+| **Identity matching** | DOI, URL, author+year for sources | Exact dedup without any text matching |
+| **BM25 text ranking** | IDF + TF saturation + length normalization | "Anything about attention mechanisms?" |
+| **LLM + graph traversal** | Agent reformulates queries, follows edges from entry points | Semantic understanding, discovering related notes search would miss |
+
+Text search is the fallback, not the primary path. Most queries either start from a known node (via scaffolding) or use structural filters.
+
+**Scale:** At 50-500 notes, BM25 scoring on every note is <1ms. No index needed. If the ontology grows past ~2000 notes, add an inverted index (token → noteId set) as a precomputed lookup table — same BM25 scoring, just faster candidate retrieval.
 
 ### Typical Ontology Manager Turn
 
@@ -377,7 +492,7 @@ function findExistingSource(ontology: Ontology, meta: SourceMeta): Note | null {
 1. Receives: user asked about transformer efficiency, agent searched 3 papers,
    found results, wrote a summary
 
-2. Calls search_notes(["transformer efficiency", "attention scaling"]) → finds existing claim node
+2. Calls search_notes({ queries: ["transformer efficiency", "attention scaling"], kind: "claim" }) → finds existing claim node
 
 3. Calls get_connections(claimId) → sees current supports/contradicts edges
 

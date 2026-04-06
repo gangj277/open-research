@@ -3,13 +3,17 @@ import { discoverScholarlySources } from "@/lib/discovery/scholarly-search";
 
 export async function executeSearchExternalSources(
   args: {
-    searches: Array<{ query: string; intent: string }>;
+    searches?: Array<{ query: string; intent?: string }>;
     num_results?: number;
   },
   ctx: WorkspaceContext
 ) {
-  const primary = args.searches[0];
-  const variations = args.searches.slice(1).map((item) => item.query);
+  const searches = args.searches ?? [];
+  if (searches.length === 0) {
+    return { result: "Error: no search queries provided.", sources: [] };
+  }
+  const primary = searches[0]!;
+  const variations = searches.slice(1).map((item) => item.query);
   const results = await discoverScholarlySources({
     query: primary.query,
     queryVariations: variations,

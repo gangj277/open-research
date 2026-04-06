@@ -33,6 +33,7 @@ import {
 } from "@/lib/config/store";
 import { AVAILABLE_MODELS } from "@/lib/llm/model-map";
 import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
+import { SessionPicker } from "@/tui/session-picker";
 import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
@@ -155,7 +156,8 @@ export function App({
   const [theme, setTheme] = useState<Theme>("dark");
   const [config, setConfig] = useState<OpenResearchConfig | null>(null);
   const [cursorToEnd, setCursorToEnd] = useState(0);
-  const [screen, setScreen] = useState<"main" | "config">("main");
+  const [screen, setScreen] = useState<"main" | "config" | "resume">("main");
+  const [resumeSessions, setResumeSessions] = useState<import("@/lib/workspace/sessions").SavedSession[]>([]);
   const sessionId = useMemo(() => crypto.randomUUID(), []);
   const deferredMessages = useDeferredValue(messages);
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
@@ -1279,6 +1281,32 @@ export function App({
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  if (screen === "resume") {
+    return (
+      <SessionPicker
+        sessions={resumeSessions}
+        onSelect={async (session) => {
+          try {
+            const restored = await loadSessionHistory(workspacePath!, session.id);
+            startTransition(() => {
+              setMessages(restored.messages);
+              setHistory(restored.llmHistory);
+            });
+            addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);
+          } catch (err) {
+            addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          setScreen("main");
+          setComposerFocused(true);
+        }}
+        onCancel={() => {
+          setScreen("main");
+          setComposerFocused(true);
+        }}
+      />
+    );
+  }
 
   if (screen === "config") {
     return (

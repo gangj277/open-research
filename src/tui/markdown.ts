@@ -1,9 +1,49 @@
 import chalk from "chalk";
+import path from "node:path";
+import fs from "node:fs";
+
+// ── OSC 8 Terminal Hyperlinks ───────────────────────────────────────────────
+// Makes file paths Cmd+Clickable in supported terminals (iTerm2, Kitty, etc.)
+
+const FILE_EXTENSIONS = new Set([
+  ".py", ".ts", ".tsx", ".js", ".jsx", ".r", ".R", ".tex", ".bib",
+  ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".tsv",
+  ".sh", ".bash", ".zsh", ".sql", ".html", ".css", ".xml",
+  ".pdf", ".png", ".jpg", ".svg", ".gif",
+  ".cfg", ".ini", ".env", ".lock", ".log",
+]);
+
+function looksLikeFilePath(text: string): boolean {
+  if (text.length < 3 || text.length > 200) return false;
+  if (text.includes(" ") || text.includes("\n")) return false;
+  const ext = path.extname(text).toLowerCase();
+  if (FILE_EXTENSIONS.has(ext)) return true;
+  if (text.includes("/") && !text.startsWith("http")) return true;
+  return false;
+}
+
+function resolveFilePath(filePath: string): string {
+  if (path.isAbsolute(filePath)) return filePath;
+  return path.resolve(process.cwd(), filePath);
+}
+
+/** Wrap text in an OSC 8 hyperlink (Cmd+Click opens file in IDE) */
+function fileLink(displayText: string, filePath: string): string {
+  const absPath = resolveFilePath(filePath);
+  // Only link if the file actually exists
+  try {
+    fs.statSync(absPath);
+  } catch {
+    return displayText; // File doesn't exist, don't link
+  }
+  const uri = `file://${absPath}`;
+  return `\x1b]8;;${uri}\x1b\\${displayText}\x1b]8;;\x1b\\`;
+}
 
 /**
  * Lightweight terminal markdown renderer.
  * Handles: bold, italic, code spans, code blocks, headings, lists, blockquotes, links, horizontal rules.
- * No external dependencies beyond chalk (which we already have).
+ * File paths in code spans are Cmd+Clickable via OSC 8 hyperlinks.
  */
 export function renderMarkdown(text: string): string {
   if (!text || !text.trim()) return text;
@@ -114,8 +154,13 @@ export function renderMarkdown(text: string): string {
 function renderInline(text: string): string {
   let result = text;
 
-  // Code spans (must be first to avoid interference with other patterns)
-  result = result.replace(/`([^`]+)`/g, (_, code) => chalk.cyan(code));
+  // Code spans — file paths get clickable links, rest get cyan styling
+  result = result.replace(/`([^`]+)`/g, (_, code: string) => {
+    if (looksLikeFilePath(code)) {
+      return fileLink(chalk.cyan.underline(code), code);
+    }
+    return chalk.cyan(code);
+  });
 
   // Bold + italic (***text*** or ___text___)
   result = result.replace(/\*\*\*(.+?)\*\*\*/g, (_, t) => chalk.bold.italic(t));

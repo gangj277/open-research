@@ -103,6 +103,7 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     "- Be transparent. Show the user what you're doing and why.",
     "- When unsure, ask. Use ask_user rather than guessing.",
     "- For large outputs, redirect to a file and read selectively.",
+    "- Always wrap file paths in backticks when mentioning them, e.g. `notes/brief.md` or `experiments/analysis.py`. This makes them clickable in the terminal.",
     "",
     `## Workspace\nRoot: ${process.cwd()}\nUse list_directory to explore. Use search_workspace or read_file to read content.`,
     skillText,

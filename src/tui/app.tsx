@@ -159,6 +159,7 @@ export function App({
   const [cursorToEnd, setCursorToEnd] = useState(0);
   const [screen, setScreen] = useState<"main" | "config" | "resume">("main");
   const [resumeSessions, setResumeSessions] = useState<import("@/lib/workspace/sessions").SavedSession[]>([]);
+  const [ctrlCPending, setCtrlCPending] = useState(false);
   const sessionId = useMemo(() => crypto.randomUUID(), []);
   const deferredMessages = useDeferredValue(messages);
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
@@ -166,6 +167,7 @@ export function App({
 
   const [agentQuestion, setAgentQuestion] = useState<AskUserPendingQuestion | null>(null);
   const previewRef = useRef<PreviewServer | null>(null);
+  const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isHome = deferredMessages.length === 0 && !busy;
   const hasWorkspace = workspacePath !== null;
@@ -223,6 +225,14 @@ export function App({
     });
     return () => { cancelled = true; };
   }, [homeDir]);
+
+  useEffect(() => {
+    return () => {
+      if (ctrlCTimerRef.current) {
+        clearTimeout(ctrlCTimerRef.current);
+      }
+    };
+  }, []);
 
   // ── Unified autocomplete (commands + skills) ────────────────────────────
 
@@ -776,9 +786,69 @@ export function App({
     });
   }
 
+  function clearCtrlCPending() {
+    if (ctrlCTimerRef.current) {
+      clearTimeout(ctrlCTimerRef.current);
+      ctrlCTimerRef.current = null;
+    }
+    setCtrlCPending(false);
+  }
+
+  function armCtrlCExitWindow() {
+    if (ctrlCTimerRef.current) {
+      clearTimeout(ctrlCTimerRef.current);
+    }
+    setCtrlCPending(true);
+    ctrlCTimerRef.current = setTimeout(() => {
+      ctrlCTimerRef.current = null;
+      setCtrlCPending(false);
+    }, 3000);
+  }
+
+  function returnToMainScreen() {
+    setScreen("main");
+    setComposerFocused(true);
+  }
+
   // ── Keyboard input ────────────────────────────────────────────────────
 
   useInput((key, inputKey) => {
+    if (inputKey.ctrl && key === "c") {
+      if (busy) {
+        clearCtrlCPending();
+        if (abortRef.current) {
+          abortRef.current.abort();
+          addSystemMessage("Interrupting agent...");
+        }
+        return;
+      }
+
+      if (screen !== "main") {
+        clearCtrlCPending();
+        returnToMainScreen();
+        return;
+      }
+
+      if (planningState.status === "charter-review") {
+        clearCtrlCPending();
+        rejectCharter();
+        return;
+      }
+
+      if (ctrlCPending) {
+        clearCtrlCPending();
+        app.exit();
+        return;
+      }
+
+      armCtrlCExitWindow();
+      return;
+    }
+
+    if (ctrlCPending) {
+      clearCtrlCPending();
+    }
+
     // Shift+Tab cycles agent mode
     if (inputKey.shift && inputKey.tab) {
       setAgentMode((prev) => {
@@ -1236,6 +1306,7 @@ export function App({
   // ── Status bar text ─────────────────────────────────────────────────────
 
   const statusParts: string[] = [];
+  if (ctrlCPending) statusParts.push("Press Ctrl+C again to exit.");
   if (hasAuth) statusParts.push("connected");
   else statusParts.push("no auth");
   if (hasWorkspace) statusParts.push(`${workspaceFiles.length} files`);
@@ -1244,7 +1315,15 @@ export function App({
   statusParts.push(agentMode);
   if (deferredPendingUpdates.length > 0) statusParts.push(`${deferredPendingUpdates.length} pending`);
 
-  const statusColor = busy ? "yellow" : !hasAuth ? "red" : deferredPendingUpdates.length > 0 ? "magenta" : "green";
+  const statusColor = busy
+    ? "yellow"
+    : ctrlCPending
+      ? "yellow"
+      : !hasAuth
+        ? "red"
+        : deferredPendingUpdates.length > 0
+          ? "magenta"
+          : "green";
 
   // ── Config screen ─────────────────────────────────────────────────────────
 
@@ -1304,8 +1383,7 @@ export function App({
   }
 
   function handleConfigClose() {
-    setScreen("main");
-    setComposerFocused(true);
+    returnToMainScreen();
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1325,12 +1403,10 @@ export function App({
           } catch (err) {
             addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
           }
-          setScreen("main");
-          setComposerFocused(true);
+          returnToMainScreen();
         }}
         onCancel={() => {
-          setScreen("main");
-          setComposerFocused(true);
+          returnToMainScreen();
         }}
       />
     );
@@ -1368,7 +1444,7 @@ export function App({
             if (msg.role === "user") {
               return <UserMessage key={`msg-${idx}`} text={msg.text} />;
             }
-            return <AgentMessage key={`msg-${idx}`} text={msg.text} />;
+            return <AgentMessage key={`msg-${idx}`} text={msg.text} workspaceDir={workspacePath ?? undefined} />;
           })}
         </Box>
       )}

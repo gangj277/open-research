@@ -41,8 +41,8 @@ export function UserMessage({ text }: { text: string }) {
   );
 }
 
-export function AgentMessage({ text }: { text: string }) {
-  const rendered = renderMarkdown(text);
+export function AgentMessage({ text, workspaceDir }: { text: string; workspaceDir?: string }) {
+  const rendered = renderMarkdown(text, { baseDir: workspaceDir });
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Box>

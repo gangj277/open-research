@@ -43,6 +43,7 @@ program
           pendingUpdates: [],
         },
       }),
+      { exitOnCtrlC: false },
     );
   });
 

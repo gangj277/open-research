@@ -28,7 +28,7 @@ import {
 } from "@/lib/agent/context-manager";
 import { loadAllMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
 import { generateInitialAgentsMd } from "@/lib/workspace/init-agents-md";
-import { getSemanticScholarApiKey, getOpenAlexApiKey } from "@/lib/config/store";
+import { getSemanticScholarApiKey, getOpenAlexApiKey, getBraveApiKey } from "@/lib/config/store";
 import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import { SLASH_COMMANDS, type SlashCommand, type WorkspaceFile } from "@/tui/commands";
 import type { ConversationMessage } from "@/tui/streaming";
@@ -441,23 +441,27 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       if (!args) {
         const ssKey = getSemanticScholarApiKey(config);
         const oaKey = getOpenAlexApiKey(config);
+        const braveKey = getBraveApiKey(config);
         addSystemMessage("API Keys:");
         addSystemMessage(`  Semantic Scholar: ${ssKey ? ssKey.slice(0, 8) + "..." : "not set"}`);
         addSystemMessage(`  OpenAlex: ${oaKey ? oaKey.slice(0, 8) + "..." : "not set"}`);
+        addSystemMessage(`  Brave Search: ${braveKey ? braveKey.slice(0, 8) + "..." : "not set (using DuckDuckGo)"}`);
         addSystemMessage("");
         addSystemMessage("Set via CLI:");
         addSystemMessage("  /api-keys semantic-scholar YOUR_KEY");
         addSystemMessage("  /api-keys openalex YOUR_KEY");
+        addSystemMessage("  /api-keys brave YOUR_KEY");
         addSystemMessage("");
         addSystemMessage("Or set environment variables:");
         addSystemMessage("  export SEMANTIC_SCHOLAR_API_KEY=your_key");
         addSystemMessage("  export OPENALEX_API_KEY=your_key");
+        addSystemMessage("  export BRAVE_API_KEY=your_key");
         break;
       }
       const [keyName, ...keyParts] = args.split(/\s+/);
       const keyValue = keyParts.join("").trim();
       if (!keyValue) {
-        addSystemMessage("Usage: /api-keys <semantic-scholar|openalex> <key>");
+        addSystemMessage("Usage: /api-keys <semantic-scholar|openalex|brave> <key>");
         break;
       }
       if (config) {
@@ -466,8 +470,10 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
           apiKeys.semanticScholar = keyValue;
         } else if (keyName === "openalex" || keyName === "oa") {
           apiKeys.openAlex = keyValue;
+        } else if (keyName === "brave") {
+          apiKeys.brave = keyValue;
         } else {
-          addSystemMessage(`Unknown key: ${keyName}. Use semantic-scholar or openalex.`);
+          addSystemMessage(`Unknown key: ${keyName}. Use semantic-scholar, openalex, or brave.`);
           break;
         }
         const updated = { ...config, apiKeys };
@@ -486,8 +492,10 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       addSystemMessage(`  Skills: ${skills.length} loaded`);
       const ssKey = getSemanticScholarApiKey(config);
       const oaKey = getOpenAlexApiKey(config);
+      const brKey = getBraveApiKey(config);
       addSystemMessage(`  Semantic Scholar API: ${ssKey ? "configured" : "not set (rate-limited)"}`);
       addSystemMessage(`  OpenAlex API: ${oaKey ? "configured" : "not set (limited)"}`);
+      addSystemMessage(`  Brave Search API: ${brKey ? "configured" : "not set (using DuckDuckGo)"}`);
       const mems = await loadAllMemories({ homeDir });
       addSystemMessage(`  Memories: ${mems.length} stored`);
       addSystemMessage(`  Node: ${process.version}`);
@@ -552,6 +560,77 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
         addSystemMessage("");
         addSystemMessage("  /memory clear — delete all");
         addSystemMessage("  /memory delete <id> — delete one");
+      }
+      break;
+    }
+    case "ontology": {
+      const workspaceDir = workspacePath;
+      if (!workspaceDir) {
+        addSystemMessage("No workspace. Run /init first.");
+        break;
+      }
+
+      const { loadOntology, saveOntology } = await import("@/lib/ontology/store");
+      const ontology = await loadOntology(workspaceDir);
+
+      if (!args) {
+        // /ontology — show summary
+        const { getOntologyStatus } = await import("@/lib/ontology/status");
+        addSystemMessage(getOntologyStatus(ontology));
+      } else if (args === "claims") {
+        const { formatClaims } = await import("@/lib/ontology/status");
+        addSystemMessage(formatClaims(ontology));
+      } else if (args === "conflicts") {
+        const { formatConflicts } = await import("@/lib/ontology/status");
+        addSystemMessage(formatConflicts(ontology));
+      } else if (args.startsWith("around ")) {
+        const term = args.slice(7).trim();
+        if (!term) { addSystemMessage("Usage: /ontology around <term>"); break; }
+        const { searchNotes, getConnections } = await import("@/lib/ontology/read-tools");
+        const results = searchNotes(ontology, { queries: [term], limit: 5 });
+        if (results.length === 0) {
+          addSystemMessage(`No notes found matching "${term}".`);
+        } else {
+          for (const note of results) {
+            addSystemMessage(`[${note.id.slice(0, 8)}] "${note.content}" (${note.kind}, ${note.confidence})`);
+            const { connected } = getConnections(ontology, note.id, 1);
+            for (const conn of connected) {
+              const edge = note.edges.find((e) => e.targetId === conn.id);
+              const rel = edge ? `${edge.relation} →` : "← connected";
+              addSystemMessage(`  ${rel} [${conn.id.slice(0, 8)}] "${conn.content}" (${conn.kind})`);
+            }
+          }
+        }
+      } else if (args.startsWith("delete ")) {
+        const noteId = args.slice(7).trim();
+        const note = ontology.notes.find((n) => n.id.startsWith(noteId));
+        if (!note) {
+          addSystemMessage(`Note not found: ${noteId}`);
+        } else {
+          // Remove the note and all edges referencing it
+          ontology.notes = ontology.notes.filter((n) => n.id !== note.id);
+          for (const n of ontology.notes) {
+            n.edges = n.edges.filter((e) => e.targetId !== note.id);
+          }
+          await saveOntology(ontology, workspaceDir);
+          addSystemMessage(`Deleted note [${note.id.slice(0, 8)}] "${note.content}" and its edges.`);
+        }
+      } else if (args.startsWith("edit ")) {
+        const noteId = args.slice(5).trim();
+        const note = ontology.notes.find((n) => n.id.startsWith(noteId));
+        if (!note) {
+          addSystemMessage(`Note not found: ${noteId}`);
+        } else {
+          addSystemMessage(`Note [${note.id.slice(0, 8)}]:`);
+          addSystemMessage(`  Kind: ${note.kind}`);
+          addSystemMessage(`  Content: "${note.content}"`);
+          addSystemMessage(`  Confidence: ${note.confidence}`);
+          addSystemMessage(`  Edges: ${note.edges.length}`);
+          addSystemMessage("");
+          addSystemMessage("To edit, use the agent: \"Update the ontology note about ...\"");
+        }
+      } else {
+        addSystemMessage("Usage: /ontology [claims|conflicts|around <term>|delete <id>|edit <id>]");
       }
       break;
     }

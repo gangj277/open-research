@@ -107,10 +107,20 @@ export async function executeTool(
 
     case "search_external_sources": {
       const out = await executeSearchExternalSources(
-        args as { searches: Array<{ query: string; intent: string }>; num_results?: number },
-        ctx
+        args as { target: string; searches: Array<{ query: string; intent: string }>; num_results?: number },
+        ctx,
+        provider,
       );
       return { result: out.result, searchResults: out.sources };
+    }
+
+    case "web_search": {
+      const { executeWebSearch } = await import("./tools/web-search");
+      const out = await executeWebSearch(
+        args as { target: string; query: string; num_results?: number },
+        provider,
+      );
+      return { result: out.result };
     }
 
     // ── User Interaction ────────────────────────────────────────────────
@@ -188,6 +198,30 @@ export async function executeTool(
       return {
         result: executeUpdateTask(args as { taskId: string; status?: string; subject?: string; activeForm?: string }),
       };
+
+    // ── Ontology ──────────────────────────────────────────────────────────
+    case "query_ontology": {
+      if (!provider) {
+        return { result: "Error: query_ontology requires an LLM provider." };
+      }
+      const { runQueryAgent } = await import("@/lib/ontology/query-agent");
+      const workspaceDir = ctx.workspaceDir ?? process.cwd();
+      const answer = await runQueryAgent({
+        query: String(args.query ?? ""),
+        scope: args.scope ? String(args.scope) : undefined,
+        provider,
+        workspaceDir,
+      });
+      return { result: answer };
+    }
+
+    case "ontology_status": {
+      const { loadOntology } = await import("@/lib/ontology/store");
+      const { getOntologyStatus } = await import("@/lib/ontology/status");
+      const workspaceDir = ctx.workspaceDir ?? process.cwd();
+      const ontology = await loadOntology(workspaceDir);
+      return { result: getOntologyStatus(ontology) };
+    }
 
     default:
       return { result: `Unknown tool: "${name}"` };

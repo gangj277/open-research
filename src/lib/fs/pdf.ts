@@ -31,3 +31,27 @@ export async function extractPdfText(
 
   return { text: pages.join("\n\n"), totalPages };
 }
+
+export async function extractPdfTextFromBuffer(
+  buffer: Uint8Array,
+  options?: { maxPages?: number }
+): Promise<PdfExtractResult> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const document = await pdfjs.getDocument({ data: buffer }).promise;
+  const totalPages = document.numPages;
+  const end = Math.min(totalPages, options?.maxPages ?? 20);
+
+  const pages: string[] = [];
+  for (let pageNumber = 1; pageNumber <= end; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = content.items
+      .map((item) => ("str" in item ? String(item.str) : ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) pages.push(text);
+  }
+
+  return { text: pages.join("\n\n"), totalPages };
+}

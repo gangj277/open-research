@@ -17,6 +17,7 @@ const TOOL_GROUPS: Record<string, string> = {
   read_skill_reference: "read",
   create_tasks: "tasks",
   update_task: "tasks",
+  web_search: "web searched",
 };
 
 export function buildToolSummary(tools: Array<{ name: string; description: string; durationMs?: number }>): string {
@@ -42,10 +43,11 @@ export function buildToolSummary(tools: Array<{ name: string; description: strin
   if (groups["created paper"]) parts.push("Created paper");
   if (groups["sub-agent"]) parts.push(`Ran ${groups["sub-agent"]} sub-agent${groups["sub-agent"] > 1 ? "s" : ""}`);
   if (groups["tasks"]) parts.push(`Updated tasks`);
+  if (groups["web searched"]) parts.push(`Web searched${groups["web searched"] > 1 ? ` (${groups["web searched"]}×)` : ""}`);
 
   // Catch any unmatched
   for (const [group, count] of Object.entries(groups)) {
-    if (!["read", "listed", "searched", "searched papers", "ran", "wrote", "edited", "fetched", "asked user", "loaded skill", "created paper", "sub-agent", "tasks"].includes(group)) {
+    if (!["read", "listed", "searched", "searched papers", "ran", "wrote", "edited", "fetched", "asked user", "loaded skill", "created paper", "sub-agent", "tasks", "web searched"].includes(group)) {
       parts.push(`${group} (${count})`);
     }
   }

@@ -20,12 +20,17 @@ CRITICAL RULES:
 - Maximum 3 actions per exchange
 - If nothing meaningful to remember, return an empty array
 
+IMPORTANT — what NOT to store as memories:
+- Research findings, claims, hypotheses, evidence, or source details — these belong in the ontology, not memory
+- Specific paper results, data points, or analytical conclusions — ontology handles these
+- Connections between findings, contradictions, or evidence chains — ontology handles these
+Memory is for WHO the researcher is and HOW they work. The ontology handles WHAT they know.
+
 Categories:
 - "user" — identity, role, field, institution (→ stored globally)
-- "preference" — tools, style, methodology preferences (→ stored globally)
-- "project" — current research topics, findings, hypotheses (→ stored per-project)
-- "methodology" — statistical approaches, frameworks (→ stored globally)
-- "context" — deadlines, collaborators, constraints (→ stored per-project)
+- "preference" — tools, citation style, writing preferences (→ stored globally)
+- "methodology" — statistical approaches, frameworks, analytical habits (→ stored globally)
+- "context" — deadlines, collaborators, target venues, project constraints (→ stored per-project)
 
 Existing memories:
 {EXISTING_MEMORIES}
@@ -47,7 +52,7 @@ Example:
 interface ExtractedAction {
   action: "create" | "update";
   content: string;
-  category: "user" | "preference" | "project" | "methodology" | "context";
+  category: "user" | "preference" | "methodology" | "context";
   updateId?: string;
 }
 
@@ -106,7 +111,7 @@ export async function extractMemories(input: {
       if (
         typeof item.content === "string" &&
         item.content.length > 5 &&
-        ["user", "preference", "project", "methodology", "context"].includes(item.category) &&
+        ["user", "preference", "methodology", "context"].includes(item.category) &&
         ["create", "update"].includes(item.action)
       ) {
         valid.push({
@@ -162,7 +167,7 @@ export async function extractAndStoreMemories(input: {
       }
     } else {
       // Create new
-      const scope = (action.category === "project" || action.category === "context") ? "project" : "global";
+      const scope = action.category === "context" ? "project" : "global";
       const saved = await addMemory(
         { content: action.content, category: action.category, scope },
         { homeDir: input.homeDir, workspaceDir: input.workspaceDir }

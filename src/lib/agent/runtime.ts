@@ -76,7 +76,14 @@ const TOOL_DESCRIPTIONS: Record<string, (args: Record<string, unknown>) => strin
       return `Fetching URL`;
     }
   },
-  search_external_sources: () => "Searching academic papers",
+  search_external_sources: (a) => {
+    const target = a.target as string | undefined;
+    return target ? `Searching papers: "${target.slice(0, 50)}"` : "Searching academic papers";
+  },
+  web_search: (a) => {
+    const query = a.query as string | undefined;
+    return `Web search: "${query?.slice(0, 50) ?? ""}"`;
+  },
   ask_user: (a) => `Asking: ${(a.question as string)?.slice(0, 50) ?? "question"}`,
   load_skill: (a) => `Loading skill: ${a.skill_id ?? ""}`,
   read_skill_reference: (a) => `Reading skill reference: ${a.path ?? ""}`,
@@ -155,8 +162,9 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     "- `read_file` / `list_directory` / `search_workspace` — explore and read",
     "- `run_command` — execute python, R, node, LaTeX, curl, git, etc.",
     "- `write_new_file` / `update_existing_file` — create and edit workspace files",
-    "- `search_external_sources` — search OpenAlex, Semantic Scholar, arXiv",
-    "- `fetch_url` — fetch web pages and API responses",
+    "- `search_external_sources` — search academic papers and extract evidence for/against a target (arXiv, Semantic Scholar, OpenAlex)",
+    "- `web_search` — search the web and extract evidence for/against a target (docs, blogs, datasets, news)",
+    "- `fetch_url` — fetch a specific URL when you already know the address",
     "- `ask_user` — ask clarifying questions when genuinely needed",
     "- `load_skill` — activate specialized research workflows",
     "- `launch_subagent` — delegate exploration to a lightweight sub-agent that runs on its own context window",
@@ -222,6 +230,7 @@ export async function runAgentTurn(input: {
   sessionUsage?: SessionTokenUsage;
   onMemoryExtracted?: (memories: string[]) => void;
   onAgentsMdUpdated?: () => void;
+  onOntologyUpdated?: () => void;
   onSubAgentProgress?: (progress: SubAgentProgress) => void;
   signal?: AbortSignal;
 }): Promise<AgentTurnResult> {
@@ -255,10 +264,31 @@ export async function runAgentTurn(input: {
   // Load task context (if tasks exist)
   const taskBlock = getTaskContextBlock();
 
+  // Load ontology scaffolding (relevance agent + formatting)
+  let ontologyBlock: string | null = null;
+  if (input.workspace.workspaceDir) {
+    try {
+      const { loadOntology } = await import("@/lib/ontology/store");
+      const { runRelevanceAgent } = await import("@/lib/ontology/relevance-agent");
+      const { buildScaffoldingContext } = await import("@/lib/ontology/scaffolding");
+
+      const ontology = await loadOntology(input.workspace.workspaceDir);
+      const relevantIds = await runRelevanceAgent({
+        userMessage: input.message,
+        ontology,
+        provider: input.provider,
+      });
+      ontologyBlock = buildScaffoldingContext(ontology, relevantIds);
+    } catch {
+      // Best-effort — continue without scaffolding
+    }
+  }
+
   const fullSystemPrompt = [
     systemPrompt,
     memoryBlock || null,
     agentsMd ? `## Project Context (from AGENTS.md)\n${agentsMd}` : null,
+    ontologyBlock || null,
     taskBlock || null,
   ].filter(Boolean).join("\n\n");
 
@@ -270,6 +300,7 @@ export async function runAgentTurn(input: {
 
   const proposedUpdates: ProposedUpdate[] = [];
   const searchResults: AgentTurnResult["searchResults"] = [];
+  const collectedToolOutputs: Array<{ tool: string; input: string; output: string }> = [];
   const signal = input.signal;
 
   for (;;) {
@@ -349,6 +380,22 @@ export async function runAgentTurn(input: {
           model: selectModelForTask(input.provider.kind, input.model, "workspace"),
         }).then((updated) => {
           if (updated) input.onAgentsMdUpdated?.();
+        }).catch(() => { /* best-effort */ });
+      }
+
+      // Background: update ontology (serial queue, non-blocking)
+      if (input.workspace.workspaceDir) {
+        import("@/lib/ontology/manager-queue").then(({ enqueueOntologyManager }) => {
+          enqueueOntologyManager({
+            userMessage: input.message,
+            agentResponse: fullText,
+            toolOutputs: collectedToolOutputs,
+            sessionId: "", // optional tracking
+            turnIndex: 0,
+            provider: input.provider,
+            workspaceDir: input.workspace.workspaceDir!,
+            onOntologyUpdated: input.onOntologyUpdated,
+          });
         }).catch(() => { /* best-effort */ });
       }
 
@@ -468,6 +515,13 @@ export async function runAgentTurn(input: {
           role: "tool",
           tool_call_id: toolCall.id,
           content: result.result,
+        });
+
+        // Collect for ontology manager
+        collectedToolOutputs.push({
+          tool: toolCall.name,
+          input: toolCall.arguments,
+          output: result.result,
         });
       }
     }

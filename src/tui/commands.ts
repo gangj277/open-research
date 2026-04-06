@@ -28,6 +28,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "doctor", aliases: [], description: "Diagnose auth, connectivity, and tool availability", category: "system" },
   { name: "preview", aliases: [], description: "Live preview a LaTeX file in browser (e.g. /preview papers/draft.tex)", category: "workspace" },
   { name: "memory", aliases: ["/memories"], description: "View or clear stored memories about you", category: "system" },
+  { name: "ontology", aliases: ["/onto"], description: "View or manage the research ontology", category: "workspace" },
   { name: "exit", aliases: ["/quit", "/q"], description: "Exit Open Research", category: "system" },
 ];
 
@@ -77,6 +78,7 @@ const SUBCOMMAND_HINTS: Record<string, SubcommandHint[]> = {
   "api-keys": [
     { name: "api-keys semantic-scholar <key>", description: "Set your Semantic Scholar API key" },
     { name: "api-keys openalex <key>", description: "Set your OpenAlex API key" },
+    { name: "api-keys brave <key>", description: "Set Brave Search API key for better web search" },
   ],
   "config": [
     { name: "config theme dark|light", description: "Set color theme" },

@@ -9,7 +9,7 @@ export type MemoryScope = "global" | "project";
 export interface Memory {
   id: string;
   content: string;
-  category: "user" | "preference" | "project" | "methodology" | "context";
+  category: "user" | "preference" | "methodology" | "context";
   scope: MemoryScope;
   createdAt: string;
   lastRelevantAt: string;
@@ -102,7 +102,7 @@ export async function addMemory(
   memory: Omit<Memory, "id" | "createdAt" | "lastRelevantAt" | "relevanceCount" | "scope"> & { scope?: MemoryScope },
   options?: PathOptions & { workspaceDir?: string }
 ): Promise<Memory> {
-  const scope = memory.scope ?? (memory.category === "project" || memory.category === "context" ? "project" : "global");
+  const scope = memory.scope ?? (memory.category === "context" ? "project" : "global");
   const filePath = scope === "project" && options?.workspaceDir
     ? getProjectMemoryFile(options.workspaceDir)
     : getGlobalMemoryFile(options);

@@ -133,6 +133,7 @@ export function normalizeArxivPaper(paper: ArxivPaper): NormalizedCandidate | nu
     title: paper.title,
     url: sourceUrl ?? pdfUrl ?? "",
     pdfUrl,
+    abstract: paper.summary?.trim() || undefined,
     publishedDate: normalizeDatePrefix(paper.published),
     author: paper.authors[0],
     provider: "arxiv",

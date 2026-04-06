@@ -28,6 +28,7 @@ export interface ScholarlyDiscoveredSource {
   title: string;
   url: string;
   pdfUrl?: string;
+  abstract?: string;
   publishedDate?: string;
   author?: string;
   provider: ScholarlyProvider;

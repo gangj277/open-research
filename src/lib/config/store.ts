@@ -25,6 +25,7 @@ export const openResearchConfigSchema = z.object({
     openai: z.string().optional(),
     semanticScholar: z.string().optional(),
     openAlex: z.string().optional(),
+    brave: z.string().optional(),
   }).optional(),
 });
 
@@ -60,6 +61,11 @@ export function getSemanticScholarApiKey(config?: OpenResearchConfig | null): st
 /** Get the OpenAlex API key from config or environment */
 export function getOpenAlexApiKey(config?: OpenResearchConfig | null): string | undefined {
   return config?.apiKeys?.openAlex || process.env.OPENALEX_API_KEY;
+}
+
+/** Get the Brave Search API key from config or environment */
+export function getBraveApiKey(config?: OpenResearchConfig | null): string | undefined {
+  return config?.apiKeys?.brave || process.env.BRAVE_API_KEY;
 }
 
 export async function loadOpenResearchConfig(

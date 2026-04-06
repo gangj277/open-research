@@ -193,26 +193,33 @@ The ontology is **per-workspace only**. Each research project has its own ontolo
 
 ```
 ~/.open-research/
-  └── memory.json              ← Global: researcher identity, preferences, methodology habits
-                                  (existing memory system, unchanged)
+  └── memory.json              ← Global: WHO the researcher is, HOW they work
+                                  (identity, preferences, methodology habits)
 
 <workspace>/.open-research/
   ├── project.json             ← Workspace metadata
-  ├── ontology.json            ← Ontology for THIS project
+  ├── memory.json              ← Project context: deadlines, collaborators, constraints
+  ├── ontology.json            ← WHAT the researcher knows: sources, findings, claims, evidence
   └── sessions/                ← Chat history
 ```
 
-**Why per-workspace:**
+### Memory vs Ontology — Clear Boundary
+
+| | Memory | Ontology |
+|---|--------|----------|
+| **What it stores** | WHO the researcher is, HOW they work | WHAT they know, WHAT the evidence says |
+| **Scope** | Global (identity, preferences, methodology) + per-project (deadlines, collaborators) | Per-workspace only |
+| **Structure** | Flat list of text with categories | Graph of Notes with typed edges |
+| **Categories** | `user`, `preference`, `methodology`, `context` | `source`, `finding`, `claim`, `question`, `method`, `insight` |
+| **Examples** | "PhD student at MIT", "Prefers APA citations", "Deadline April 15" | "Smith 2024 found 12% BLEU improvement", "Efficiency claim contradicted by Chen 2023" |
+| **Written by** | Memory extractor (after each turn) | Ontology manager (after each turn) |
+
+The memory extractor explicitly does NOT capture findings, claims, hypotheses, or evidence — those are the ontology's domain. Memory captures researcher identity and project logistics.
+
+**Why per-workspace for ontology:**
 - A research project has a specific evidence network. "Transformer efficiency" and "climate policy" are different ontologies with different sources, claims, and connections. Mixing them makes every query noisier.
 - Starting a new project means starting a fresh ontology. No irrelevant baggage from previous work.
 - The workspace is portable — copy the folder, the ontology comes with it.
-
-**What stays global:**
-- Researcher identity ("I'm a PhD student in CS") — existing `memory.json`
-- Preferences ("I prefer APA citation style") — existing `memory.json`
-- Methodology habits ("I use stratified sampling") — existing `memory.json`
-
-These are injected alongside the ontology into the agent's prompt but stored separately.
 
 **Cross-project references (future):**
 If a researcher wants to link a finding from project A into project B, that's a future feature — import/reference notes across workspaces. Not needed for v1.

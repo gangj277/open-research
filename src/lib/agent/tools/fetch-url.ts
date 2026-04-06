@@ -4,14 +4,14 @@ const MAX_RESPONSE_BYTES = 512 * 1024; // 512 KB
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 
-const USER_AGENT =
+export const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /**
  * Convert HTML to clean readable text using cheerio (proper DOM parsing).
  * Strips scripts, styles, nav, and boilerplate. Preserves heading hierarchy and paragraphs.
  */
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   const $ = loadCheerio(html);
 
   // Remove non-content elements

@@ -220,12 +220,19 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     function: {
       name: "search_external_sources",
       description:
-        "Search OpenAlex, Semantic Scholar, and arXiv for academic papers. " +
-        "Provide one or more search queries. The first query is the primary search; " +
-        "additional queries are variations to broaden coverage.",
+        "Search OpenAlex, Semantic Scholar, and arXiv for academic papers, " +
+        "then fetch content (PDFs, abstracts) and extract structured findings relative to the target. " +
+        "Returns supports/contradicts/related evidence for each source.",
       parameters: {
         type: "object",
         properties: {
+          target: {
+            type: "string",
+            description:
+              "The research claim, hypothesis, or question to evaluate sources against. " +
+              "Each paper will be analyzed for evidence that supports, contradicts, or relates to this target. " +
+              "Be specific: 'What speedups do efficient attention methods achieve' not 'attention'.",
+          },
           searches: {
             type: "array",
             items: {
@@ -244,7 +251,38 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
             description: "Maximum number of results to return. Default: 8.",
           },
         },
-        required: ["searches"],
+        required: ["target", "searches"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the web via DuckDuckGo, fetch top results, and extract structured findings " +
+        "relative to the target. Use for non-academic sources: documentation, blog posts, " +
+        "datasets, reports, news. For academic papers, use search_external_sources.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            description:
+              "The research claim or question to evaluate results against. " +
+              "Be specific: 'How to configure num_workers in PyTorch DataLoader for multi-GPU' not 'PyTorch'.",
+          },
+          query: {
+            type: "string",
+            description: "The web search query.",
+          },
+          num_results: {
+            type: "number",
+            description: "Maximum pages to fetch and analyze. Default: 5, max: 8.",
+          },
+        },
+        required: ["target", "query"],
         additionalProperties: false,
       },
     },
@@ -446,6 +484,54 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
       },
     },
   },
+  // ── Ontology ──────────────────────────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "query_ontology",
+      description:
+        "Ask a question about your research knowledge. A query agent traverses the project's ontology " +
+        "(sources, findings, claims, contradictions, evidence chains) and returns a synthesized answer. " +
+        "Use for: finding evidence for/against a claim, checking what contradicts something, " +
+        "getting methodology details, or understanding how findings connect. " +
+        "Returns a natural language answer — not raw data.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Natural language research question. Be specific. " +
+              "Good: 'what evidence contradicts the transformer efficiency claim?' " +
+              "Good: 'what methods were used across the scaling studies?' " +
+              "Bad: 'tell me about transformers' (too vague)",
+          },
+          scope: {
+            type: "string",
+            enum: ["claims", "sources", "questions", "methods", "findings", "insights"],
+            description: "Narrow the search to a specific note kind. Omit to search everything.",
+          },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ontology_status",
+      description:
+        "Get a snapshot of the research ontology: how many sources, findings, claims, methods, " +
+        "questions, and insights have been captured. Also shows contradiction count, unsupported claims, " +
+        "and open questions. Use to assess coverage, identify gaps, or decide what to investigate next.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 const TOOL_META: Record<string, ToolMeta> = {
@@ -466,6 +552,9 @@ const TOOL_META: Record<string, ToolMeta> = {
   create_paper: { parallelSafe: false },
   create_tasks: { parallelSafe: true },
   update_task: { parallelSafe: true },
+  web_search: { parallelSafe: true },
+  query_ontology: { parallelSafe: true },
+  ontology_status: { parallelSafe: true },
 };
 
 export function isParallelSafe(toolName: string): boolean {
@@ -481,6 +570,7 @@ const PLANNING_TOOL_NAMES = new Set([
   "search_workspace",
   "fetch_url",
   "search_external_sources",
+  "web_search",
   "load_skill",
   "read_skill_reference",
   "ask_user",

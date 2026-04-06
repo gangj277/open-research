@@ -399,29 +399,11 @@ export function App({
       }
       case "resume": {
         if (!workspacePath) { addSystemMessage("No workspace. Run /init first."); break; }
-        const resumeSessions = await listSessions(workspacePath);
-        if (resumeSessions.length === 0) { addSystemMessage("No previous sessions found."); break; }
-        if (!args) {
-          addSystemMessage("Recent sessions:");
-          for (let ri = 0; ri < Math.min(resumeSessions.length, 10); ri++) {
-            const rs = resumeSessions[ri]!;
-            addSystemMessage(`  ${ri + 1}. ${rs.preview || "(empty)"} — ${rs.turnCount} turns — ${new Date(rs.lastActivity).toLocaleString()}`);
-          }
-          addSystemMessage("Type /resume <number> to restore a session.");
-          break;
-        }
-        const resumeIdx = parseInt(args, 10);
-        if (isNaN(resumeIdx) || resumeIdx < 1 || resumeIdx > resumeSessions.length) {
-          addSystemMessage(`Invalid choice. Pick 1-${Math.min(resumeSessions.length, 10)}.`);
-          break;
-        }
-        try {
-          const restored = await loadSessionHistory(workspacePath, resumeSessions[resumeIdx - 1]!.id);
-          startTransition(() => { setMessages(restored.messages); setHistory(restored.llmHistory); });
-          addSystemMessage(`Resumed session (${resumeSessions[resumeIdx - 1]!.turnCount} turns). Continue where you left off.`);
-        } catch (err) {
-          addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        const foundSessions = await listSessions(workspacePath);
+        if (foundSessions.length === 0) { addSystemMessage("No previous sessions found."); break; }
+        setResumeSessions(foundSessions);
+        setScreen("resume");
+        setComposerFocused(false);
         break;
       }
       case "config": {

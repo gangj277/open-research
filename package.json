@@ -1,6 +1,6 @@
 {
   "name": "open-research",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Local-first research CLI agent — discover papers, synthesize notes, run analysis, and draft artifacts from your terminal.",
   "type": "module",
   "license": "MIT",

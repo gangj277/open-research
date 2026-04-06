@@ -1444,7 +1444,7 @@ export function App({
             if (msg.role === "user") {
               return <UserMessage key={`msg-${idx}`} text={msg.text} />;
             }
-            return <AgentMessage key={`msg-${idx}`} text={msg.text} workspaceDir={workspacePath ?? undefined} />;
+            return <AgentMessage key={`msg-${idx}`} text={msg.text} />;
           })}
         </Box>
       )}

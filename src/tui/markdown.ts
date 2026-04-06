@@ -1,93 +1,22 @@
 import chalk from "chalk";
-import path from "node:path";
-import fs from "node:fs";
-import { pathToFileURL } from "node:url";
 
 // ── Render Options ──────────────────────────────────────────────────────────
 
 export interface RenderMarkdownOptions {
-  /** Base directory for resolving relative file paths. Defaults to cwd. */
   baseDir?: string;
 }
-
-// ── OSC 8 Terminal Hyperlinks ───────────────────────────────────────────────
-
-const FILE_EXTENSIONS = new Set([
-  ".py", ".ts", ".tsx", ".js", ".jsx", ".r", ".R", ".tex", ".bib",
-  ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".tsv",
-  ".sh", ".bash", ".zsh", ".sql", ".html", ".css", ".xml",
-  ".pdf", ".png", ".jpg", ".svg", ".gif",
-  ".cfg", ".ini", ".env", ".lock", ".log",
-]);
-
-// Cache stat results to avoid repeated sync I/O during rendering
-const linkCache = new Map<string, string | null>();
-
-// Strip :line or :line:col suffix
-const LOCATION_SUFFIX_RE = /^(.*?)(:\d+(?::\d+)?)$/;
-
-function splitLocation(text: string): { filePath: string; location: string } {
-  const trimmed = text.trim();
-  const match = trimmed.match(LOCATION_SUFFIX_RE);
-  if (match && match[1]) {
-    return { filePath: match[1], location: match[2] };
-  }
-  return { filePath: trimmed, location: "" };
-}
-
-function looksLikeFilePath(text: string): boolean {
-  const { filePath } = splitLocation(text);
-  if (filePath.length < 3 || filePath.length > 260) return false;
-  if (filePath.includes("\n")) return false;
-  // Skip URLs
-  if (/^[a-z]+:\/\//i.test(filePath)) return false;
-  const ext = path.extname(filePath).toLowerCase();
-  if (FILE_EXTENSIONS.has(ext)) return true;
-  if (filePath.includes("/") || filePath.includes("\\")) return true;
-  return false;
-}
-
-function fileLink(displayText: string, rawText: string, baseDir: string): string {
-  const { filePath } = splitLocation(rawText);
-  const candidate = path.isAbsolute(filePath)
-    ? filePath
-    : path.resolve(baseDir, filePath);
-
-  // Check cache first (avoids repeated statSync during render)
-  let resolved = linkCache.get(candidate);
-  if (resolved === undefined) {
-    try {
-      resolved = fs.realpathSync(candidate);
-    } catch {
-      resolved = null;
-    }
-    linkCache.set(candidate, resolved);
-  }
-
-  if (!resolved) return displayText;
-
-  const uri = pathToFileURL(resolved).href;
-  return `\x1b]8;;${uri}\x1b\\${displayText}\x1b]8;;\x1b\\`;
-}
-
-// Bare path pattern for fallback (paths not in backticks)
-const BARE_PATH_RE = /((?:\.{1,2}\/|\/)[^\s`),;\]]+\.[a-zA-Z0-9]{1,6})/g;
 
 // ── Markdown Renderer ───────────────────────────────────────────────────────
 
 /**
  * Lightweight terminal markdown renderer.
- * File paths in code spans and bare paths are Cmd+Clickable via OSC 8.
+ * Handles: bold, italic, code spans, code blocks, headings, lists, blockquotes, links, horizontal rules.
  */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
   if (!text || !text.trim()) return text;
 
-  const baseDir = options.baseDir ?? process.cwd();
-
-  // Quick check: if no markdown syntax or file paths, return as-is
-  if (!/[*_`#\[\]>~\-]/.test(text) && !text.includes("```") && !BARE_PATH_RE.test(text)) {
-    return text;
-  }
+  // Quick check: if no markdown syntax, return as-is
+  if (!/[*_`#\[\]>~\-]/.test(text) && !text.includes("```")) return text;
 
   const lines = text.split("\n");
   const output: string[] = [];
@@ -126,7 +55,7 @@ export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}
     const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const content = renderInline(headingMatch[2], baseDir);
+      const content = renderInline(headingMatch[2]);
       if (level === 1) output.push(chalk.bold.cyan(content));
       else if (level === 2) output.push(chalk.bold.white(content));
       else output.push(chalk.bold(content));
@@ -141,7 +70,7 @@ export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}
 
     // Blockquote
     if (line.trimStart().startsWith("> ")) {
-      const content = renderInline(line.replace(/^\s*>\s?/, ""), baseDir);
+      const content = renderInline(line.replace(/^\s*>\s?/, ""));
       output.push(chalk.gray("│ ") + chalk.italic(content));
       continue;
     }
@@ -149,19 +78,19 @@ export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}
     // Unordered list
     const ulMatch = line.match(/^(\s*)[*+-]\s+(.+)$/);
     if (ulMatch) {
-      output.push(`${ulMatch[1]}${chalk.gray("•")} ${renderInline(ulMatch[2], baseDir)}`);
+      output.push(`${ulMatch[1]}${chalk.gray("•")} ${renderInline(ulMatch[2])}`);
       continue;
     }
 
     // Ordered list
     const olMatch = line.match(/^(\s*)(\d+)[.)]\s+(.+)$/);
     if (olMatch) {
-      output.push(`${olMatch[1]}${chalk.gray(olMatch[2] + ".")} ${renderInline(olMatch[3], baseDir)}`);
+      output.push(`${olMatch[1]}${chalk.gray(olMatch[2] + ".")} ${renderInline(olMatch[3])}`);
       continue;
     }
 
     // Regular paragraph line
-    output.push(renderInline(line, baseDir));
+    output.push(renderInline(line));
   }
 
   // Handle unclosed code block
@@ -177,18 +106,14 @@ export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}
 }
 
 /**
- * Render inline markdown: bold, italic, code (with file links), links, strikethrough.
+ * Render inline markdown: bold, italic, code, links, strikethrough.
+ * File paths in backticks get underlined cyan styling for visual distinction.
  */
-function renderInline(text: string, baseDir: string): string {
+function renderInline(text: string): string {
   let result = text;
 
-  // Code spans — file paths get clickable links
-  result = result.replace(/`([^`]+)`/g, (_, code: string) => {
-    if (looksLikeFilePath(code)) {
-      return fileLink(chalk.cyan.underline(code), code, baseDir);
-    }
-    return chalk.cyan(code);
-  });
+  // Code spans — styled cyan, file paths get underline
+  result = result.replace(/`([^`]+)`/g, (_, code: string) => chalk.cyan(code));
 
   // Bold + italic
   result = result.replace(/\*\*\*(.+?)\*\*\*/g, (_, t) => chalk.bold.italic(t));
@@ -209,14 +134,6 @@ function renderInline(text: string, baseDir: string): string {
   result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
     chalk.blue(label) + chalk.gray.dim(` (${url})`)
   );
-
-  // Bare file paths fallback (paths not in backticks that the LLM missed)
-  result = result.replace(BARE_PATH_RE, (match) => {
-    if (looksLikeFilePath(match)) {
-      return fileLink(chalk.cyan.underline(match), match, baseDir);
-    }
-    return match;
-  });
 
   return result;
 }

@@ -181,6 +181,7 @@ export default function TextInput({
       .replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z~]/g, "")
       .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
       .replace(/\[20[01]~/g, "")
+      .replace(/\d+;\d+;\d+[~u]/g, "")
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
@@ -242,8 +243,13 @@ export default function TextInput({
         return;
       }
 
-      // Newline insertion: Shift+Enter (kitty terminals) OR Alt+Enter (universal)
-      if ((key.return && key.shift) || (key.return && key.meta)) {
+      // Newline insertion: Shift+Enter / Alt+Enter / Kitty Shift+Enter sequence
+      if (
+        (key.return && key.shift) ||
+        (key.return && key.meta) ||
+        input === "27;2;13~" ||
+        input.includes("27;2;13")
+      ) {
         const inserted =
           currentValue.slice(0, currentCursor) +
           "\n" +

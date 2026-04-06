@@ -210,8 +210,18 @@ export default function TextInput({
       }
       // ── Regular character input ──
       else if (!key.ctrl && !key.meta) {
-        // Filter out escape sequence garbage (e.g. kitty protocol responses)
-        const clean = input.replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z]/g, "").replace(/[\x00-\x08\x0e-\x1f]/g, "");
+        // Strip terminal escape sequences:
+        // - CSI sequences: ESC [ ... letter/tilde (covers bracketed paste markers [200~ / [201~)
+        // - OSC sequences: ESC ] ... BEL/ST
+        // - Lone ESC prefix leftovers
+        // Then strip control characters (except \t and \n which are valid in multiline input)
+        const clean = input
+          .replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z~]/g, "")
+          .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
+          .replace(/\[20[01]~/g, "")
+          .replace(/\r\n/g, "\n")
+          .replace(/\r/g, "\n")
+          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
         if (clean) {
           nextValue =
             originalValue.slice(0, cursorOffset) +

@@ -35,4 +35,35 @@ describe("open research config", () => {
     expect(created).toEqual(DEFAULT_OPEN_RESEARCH_CONFIG);
     expect(loaded).toEqual(DEFAULT_OPEN_RESEARCH_CONFIG);
   });
+
+  test("loadOpenResearchConfig preserves provider-scoped OpenAI config", async () => {
+    const homeDir = await makeTempDir();
+    const configFile = getOpenResearchConfigFile({ homeDir });
+
+    await fs.mkdir(path.dirname(configFile), { recursive: true });
+    await fs.writeFile(
+      configFile,
+      JSON.stringify({
+        version: 1,
+        defaults: {
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+          editPolicy: "mixed",
+        },
+        theme: "dark",
+        lastWorkspace: null,
+        providers: {
+          openai: {
+            apiKey: "sk-provider-config",
+          },
+        },
+        apiKeys: {},
+      }),
+      "utf8"
+    );
+
+    const loaded = await loadOpenResearchConfig({ homeDir });
+
+    expect(loaded?.providers?.openai?.apiKey).toBe("sk-provider-config");
+  });
 });

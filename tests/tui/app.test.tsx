@@ -3,6 +3,13 @@ import { describe, expect, test, vi } from "vitest";
 import { render } from "ink-testing-library";
 import { App } from "@/tui/app";
 
+const mockEnsureOpenResearchConfig = vi.fn(async () => ({
+  version: 1,
+  defaults: { model: "gpt-5.4", reasoningEffort: "medium", editPolicy: "mixed" },
+  theme: "dark",
+  lastWorkspace: null,
+}));
+
 vi.mock("@/lib/workspace/scan", () => ({
   scanWorkspace: vi.fn(async () => ({
     workspaceDir: "/tmp/research",
@@ -43,14 +50,11 @@ vi.mock("@/lib/skills/registry", () => ({
 }));
 
 vi.mock("@/lib/config/store", () => ({
-  ensureOpenResearchConfig: vi.fn(async () => ({
-    version: 1,
-    defaults: { model: "gpt-5.4", reasoningEffort: "medium", editPolicy: "mixed" },
-    theme: "dark",
-    lastWorkspace: null,
-  })),
+  ensureOpenResearchConfig: (...args: unknown[]) => mockEnsureOpenResearchConfig(...args),
   loadOpenResearchConfig: vi.fn(async () => null),
   saveOpenResearchConfig: vi.fn(async () => {}),
+  getConfiguredOpenAIApiKey: (config: { providers?: { openai?: { apiKey?: string } }; apiKeys?: { openai?: string } } | null | undefined) =>
+    config?.providers?.openai?.apiKey || config?.apiKeys?.openai,
   themeValues: ["dark", "light"],
 }));
 
@@ -92,6 +96,37 @@ describe("tui first-run state", () => {
 
     expect(lastFrame()).toMatch(/\/init/i);
     expect(lastFrame()).toMatch(/workspace/i);
+  });
+
+  test("treats provider-configured API key as connected on boot", async () => {
+    mockEnsureOpenResearchConfig.mockResolvedValueOnce({
+      version: 1,
+      defaults: { model: "gpt-5.4", reasoningEffort: "medium", editPolicy: "mixed" },
+      theme: "dark",
+      lastWorkspace: null,
+      providers: {
+        openai: {
+          apiKey: "sk-provider-config",
+        },
+      },
+      apiKeys: {},
+    });
+
+    const { lastFrame } = render(
+      <App
+        initialState={{
+          authStatus: "missing",
+          workspacePath: null,
+          screen: "home",
+          pendingUpdates: [],
+        }}
+      />
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(lastFrame()).toMatch(/\/init/i);
+    expect(lastFrame()).not.toMatch(/browser login|type \/auth to connect/i);
   });
 
   test("shows ready state when auth and workspace are configured", async () => {

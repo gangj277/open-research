@@ -70,7 +70,7 @@ The agent searches arXiv, Semantic Scholar, and OpenAlex — reads papers, runs 
 
 Those are coding agents. Open Research is a **research agent**.
 
-It has tools that coding agents don't: federated academic paper search, PDF extraction, source-grounded synthesis, and pluggable research skills (devil's advocate, methodology critic, experiment designer, etc.).
+It has tools that coding agents don't: federated academic paper search, PDF extraction, source-grounded synthesis, sub-agent delegation, and pluggable research skills (novelty checker, experiment designer, reviewer response manager, etc.).
 
 Everything stays local. Your workspace is a directory with `sources/`, `notes/`, `papers/`, `experiments/`. The agent reads and writes to it. Risky edits go to a review queue.
 
@@ -102,17 +102,29 @@ You review the charter and either approve it, send it back for revision, or canc
 
 **Phase 2 — Execution.** Once approved, the agent executes the charter autonomously — searching papers, reading sources, running analysis code, writing notes, and producing artifacts. It runs until the success criteria are met or it hits a dead end and reports what it found.
 
+## Sub-Agents
+
+The main agent can delegate exploration tasks to lightweight sub-agents that run on their own context window. This keeps the main agent's context clean and improves token efficiency.
+
+```
+launch_subagent(type: "explore", goal: "Find all files related to the auth flow...")
+```
+
+The **explore** sub-agent runs on `gpt-5.4-mini` with high reasoning effort. It has read-only tools (`read_file`, `list_directory`, `search_workspace`) and returns a concise, conclusion-oriented summary. The main agent gets the answer without burning its context on raw file reads.
+
+Sub-agents are extensible — new types can be added as config entries without changing the tool schema.
+
 ## Research Skills
 
 Skills are pluggable research methodologies — detailed workflow prompts that guide the agent through a specific research task. Type `/<skill-name>` to activate.
 
-### Discovery & Reading
+### Ideation & Discovery
 
 | Skill | What it does |
 |---|---|
+| **`/novelty-checker`** | Quick "has this been done?" assessment. Decomposes ideas into technique/domain/claim components, runs 5-8 search variations, and delivers a verdict: Novel, Partially novel, Incremental, or Already done — with closest existing work, white space map, and pivot recommendations. |
 | **`/source-scout`** | Systematically finds papers the workspace is missing. Searches with multiple query variations, evaluates relevance by citation count and venue, fetches key papers, produces a prioritized scout report with gap analysis. |
-| **`/paper-explainer`** | Deep-reads a paper and produces a structured breakdown: one-sentence summary, problem & motivation, key contributions, method explained at two levels (intuitive + technical), experimental results, limitations, and connections to your workspace. |
-| **`/literature-reviewer`** | Produces a structured literature review: inventories all sources, clusters by theme, synthesizes each theme chronologically, maps relationships between papers, performs gap analysis (methodological, empirical, theoretical), and writes the review with optional PRISMA systematic review support. |
+| **`/paper-explainer`** | Two modes: (1) Single paper deep read with structured breakdown including methodological red flags, or (2) Multi-paper comparison table with structured extraction across 6-10 dimensions (Elicit-style) and cross-paper synthesis. |
 
 ### Critical Evaluation
 
@@ -129,24 +141,28 @@ Skills are pluggable research methodologies — detailed workflow prompts that g
 | **`/experiment-designer`** | Autonomous proof engine. Takes a hypothesis and runs the full loop: formalize → design minimal experiment → write code → run it → analyze results → iterate (up to 5x) until proven or disproven. All artifacts saved to `experiments/` with versioned scripts. |
 | **`/data-analyst`** | End-to-end statistical analysis: explore data (distributions, missing values) → clean (with documented decisions) → analyze (appropriate tests, mandatory effect sizes and confidence intervals) → visualize (matplotlib/seaborn) → interpret with honest caveats. |
 
-### Synthesis & Writing
+### Writing & Revision
 
 | Skill | What it does |
 |---|---|
-| **`/synthesis-updater`** | Living-document management. Integrates new evidence into existing notes with full provenance tracking (`[Source: Author Year]`), confidence labels (`[Strong]`, `[Moderate]`, `[Weak]`, `[Contested]`), change trails, and a synthesis changelog. |
 | **`/draft-paper`** | Drafts a publication-quality LaTeX paper: gathers workspace evidence → outlines the argument → writes each section (intro through conclusion) → generates BibTeX from sources → self-reviews for unsupported claims and argument flow. |
+| **`/reviewer-response`** | Parses peer review comments into numbered items (R1.1, R1.2...), classifies as Major/Minor/Praise/Question, flags contradictions between reviewers, generates a point-by-point response letter with verbatim quotes and specific change locations, and maintains a revision completion checklist. |
 
 ### Meta
 
 | Skill | What it does |
 |---|---|
-| **`/skill-creator`** | Create your own custom skills in `~/.open-research/skills/`. Each skill is a markdown file with a workflow prompt — no code needed. |
+| **`/skill-creator`** | Create custom skills in `~/.open-research/skills/`. Full guidance on the SKILL.md format, directory structure, prompt design, and validation — with quality guidelines for writing effective workflow prompts. |
 
 ## Memory
 
 The agent learns about you automatically. After each conversation, a background process identifies facts worth remembering — your research field, preferred tools, current projects, methodological preferences.
 
-Memories persist in `~/.open-research/memory.json` across sessions. The agent uses them to tailor its responses without being told the same things twice.
+Memories are stored at two levels:
+- **Global** (`~/.open-research/memory.json`) — your profile, preferences, expertise
+- **Project** (`<workspace>/.open-research/memory.json`) — project-specific context
+
+Only relevant memories are injected each turn based on query similarity, keeping the context window efficient.
 
 ```
 /memory              View all stored memories
@@ -172,7 +188,7 @@ For final PDF output, the agent compiles with `pdflatex` or `tectonic` via `run_
 
 ## Tools
 
-The agent has 13 tools with full filesystem and shell access:
+The agent has 14 tools with full filesystem and shell access:
 
 | Tool | Description |
 |---|---|
@@ -189,6 +205,7 @@ The agent has 13 tools with full filesystem and shell access:
 | `create_paper` | Create LaTeX paper drafts |
 | `load_skill` | Activate a research skill |
 | `read_skill_reference` | Read reference materials from active skills |
+| `launch_subagent` | Delegate tasks to lightweight sub-agents with isolated context |
 
 ## Commands
 
@@ -200,7 +217,15 @@ The agent has 13 tools with full filesystem and shell access:
 | `/skills` | List available research skills |
 | `/preview <file>` | Live-preview a LaTeX file in browser |
 | `/memory` | View or manage stored memories |
-| `/config` | View or change settings (model, theme, mode) |
+| `/api-keys` | Set API keys for Semantic Scholar, OpenAlex |
+| `/config` | View or change settings (model, theme, mode, apikey) |
+| `/compact` | Manually compress conversation to save context |
+| `/cost` | Show token usage and cost for the session |
+| `/context` | Show context window usage — how full it is |
+| `/btw` | Ask a side question without affecting the main conversation |
+| `/export` | Export conversation as markdown |
+| `/diff` | Show files the agent has changed this session |
+| `/doctor` | Diagnose auth, connectivity, and tool availability |
 | `/resume` | Resume a previous session |
 | `/clear` | Start a new conversation |
 | `/help` | Show all commands |
@@ -214,18 +239,23 @@ my-research/
   artifacts/       # Generated outputs
   papers/          # LaTeX paper drafts
   experiments/     # Analysis scripts, results, hypotheses
-  .open-research/  # Workspace metadata and session logs
+  .open-research/  # Workspace metadata, sessions, project memory
+    AGENTS.md      # Auto-generated project context (injected into system prompt)
 ```
 
 ## Features
 
-- **Terminal markdown** — bold, italic, code blocks, headings rendered natively
-- **Autocomplete** — slash commands and skills in an arrow-key navigable dropdown
-- **@file mentions** — reference workspace files inline in prompts
+- **Senior research director persona** — concise, conclusion-oriented responses. Findings first, evidence second.
+- **Sub-agent delegation** — explore agent handles codebase navigation on its own context, returns summaries
+- **Terminal markdown** — bold, italic, code blocks, headings rendered natively with chalk
+- **Autocomplete** — slash commands, skills, and @file mentions in a scrollable arrow-key dropdown
+- **Condensed tool activity** — grouped summary per turn instead of per-tool spam, with live progress in footer
 - **Shift+Enter** — multi-line input
-- **Context management** — automatic compaction when history exceeds 90% of context window
-- **Token tracking** — context usage visible in the status bar
-- **Tool activity streaming** — real-time display of what the agent is doing
+- **Slash command highlighting** — commands appear in blue as you type
+- **Context management** — automatic two-phase compaction at 90% of context window
+- **Token tracking** — context usage visible in the status bar (input/output/reasoning/cache breakdown)
+- **AGENTS.md** — auto-generated project context file, updated after each turn, injected into system prompt
+- **Two-tier memory** — global + project-level, with selective retrieval based on query relevance
 - **Update notifications** — checks for new versions on launch
 
 ## Development
@@ -235,7 +265,7 @@ git clone https://github.com/gangj277/open-research.git
 cd open-research
 npm install
 npm run dev          # dev mode
-npm test             # 80 tests
+npm test             # tests
 npm run build        # production build
 ```
 

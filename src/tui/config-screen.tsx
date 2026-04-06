@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { useTheme } from "@/tui/theme";
 
 // ── Config item definition ────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ export interface ConfigScreenProps {
 // ── ConfigScreen ──────────────────────────────────────────────────────────
 
 export function ConfigScreen({ items, onUpdate, onClose }: ConfigScreenProps) {
+  const theme = useTheme();
   const [filter, setFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -93,29 +95,29 @@ export function ConfigScreen({ items, onUpdate, onClose }: ConfigScreenProps) {
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       {/* Header */}
-      <Text bold color="cyan">
+      <Text bold color={theme.accent}>
         /config
       </Text>
-      <Box marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1}>
-        <Text color="gray">{"\u2315 "}</Text>
-        <Text>{filter || <Text color="gray">Search settings...</Text>}</Text>
+      <Box marginTop={1} borderStyle="round" borderColor={theme.borderFocused} paddingX={1}>
+        <Text color={theme.muted}>{"\u2315 "}</Text>
+        <Text color={theme.text}>{filter || <Text color={theme.muted}>Search settings...</Text>}</Text>
       </Box>
 
       {/* Settings list */}
       <Box marginTop={1} flexDirection="column">
         {filtered.length === 0 ? (
-          <Text color="gray">No matching settings.</Text>
+          <Text color={theme.muted}>No matching settings.</Text>
         ) : (
           filtered.map((item, index) => {
             const isSelected = index === clampedIndex;
             return (
               <Box key={item.key} paddingX={2}>
                 <Box width={labelWidth}>
-                  <Text color={isSelected ? "cyan" : "white"}>
+                  <Text color={isSelected ? theme.accent : theme.text}>
                     {isSelected ? ">" : " "} {item.label}
                   </Text>
                 </Box>
-                <Text color={isSelected ? "green" : "gray"}>
+                <Text color={isSelected ? theme.secondary : theme.muted}>
                   {item.current}
                 </Text>
               </Box>
@@ -126,7 +128,7 @@ export function ConfigScreen({ items, onUpdate, onClose }: ConfigScreenProps) {
 
       {/* Footer hints */}
       <Box marginTop={1}>
-        <Text color="gray">
+        <Text color={theme.muted}>
           Type to filter  {"\u00B7"}  Enter to change  {"\u00B7"}  {"\u2191"}/{"\u2193"} to select  {"\u00B7"}  Esc to close
         </Text>
       </Box>

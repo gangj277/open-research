@@ -1,5 +1,6 @@
 import type { LLMProvider } from "@/lib/llm/provider";
 import type { PathOptions } from "@/lib/fs/paths";
+import { selectModelForTask } from "@/lib/llm/provider-catalog";
 import { addMemory, loadAllMemories, type Memory } from "./store";
 
 // ── Memory Extraction Prompt ────────────────────────────────────────────────
@@ -87,7 +88,7 @@ export async function extractMemories(input: {
         { role: "system", content: prompt },
         { role: "user", content: conversationSnippet },
       ],
-      model: input.model ?? "gpt-5.4-mini",
+      model: input.model ?? selectModelForTask(input.provider.kind, undefined, "memory"),
       maxTokens: 500,
       temperature: 0,
     });

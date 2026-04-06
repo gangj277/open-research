@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdout, measureElement } from "ink";
+import type { DOMElement } from "ink";
 import chalk from "chalk";
+import wrapAnsi from "wrap-ansi";
 
 /** Placeholder character for collapsed paste chunks in the value string. */
 const PASTE_MARKER = "\uFFFC";
@@ -19,6 +21,30 @@ export interface TextInputProps {
   showCursor?: boolean;
   /** Increment this number to force-move the cursor to end of value. */
   cursorToEnd?: number;
+  accentColor?: string;
+  mutedColor?: string;
+}
+
+type ChalkStyle = ((text: string) => string) & {
+  hex: (color: string) => ChalkStyle;
+  [key: string]: unknown;
+};
+
+function applyThemeColor(base: ChalkStyle, color: string | undefined, text: string): string {
+  if (!color) {
+    return base(text);
+  }
+
+  if (color.startsWith("#")) {
+    return base.hex(color)(text);
+  }
+
+  const namedStyle = (base as Record<string, unknown>)[color];
+  if (typeof namedStyle === "function") {
+    return (namedStyle as ChalkStyle)(text);
+  }
+
+  return base(text);
 }
 
 /** Expand all paste markers in a string back to their original content. */
@@ -66,6 +92,85 @@ function nextWordBoundary(value: string, cursor: number): number {
   return i;
 }
 
+type VisualLineRange = {
+  start: number;
+  end: number;
+  removeStart: number;
+  removeEnd: number;
+};
+
+function getVisualLineRanges(value: string, width: number): VisualLineRange[] {
+  if (width <= 0) return [];
+
+  const ranges: VisualLineRange[] = [];
+  let index = 0;
+
+  while (index <= value.length) {
+    const newlineIndex = value.indexOf("\n", index);
+    const hasNewline = newlineIndex !== -1;
+    const logicalEnd = hasNewline ? newlineIndex : value.length;
+    const segment = value.slice(index, logicalEnd);
+    const wrapped = wrapAnsi(segment, width, { trim: false, hard: true });
+    const parts = wrapped.split("\n");
+
+    let consumed = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i] ?? "";
+      const start = index + consumed;
+      const end = start + part.length;
+      consumed += part.length;
+
+      ranges.push({
+        start,
+        end,
+        removeStart: start,
+        removeEnd: i === parts.length - 1 && hasNewline ? end + 1 : end,
+      });
+    }
+
+    if (!hasNewline) break;
+    index = logicalEnd + 1;
+  }
+
+  return ranges;
+}
+
+function deleteCurrentVisualLine(
+  value: string,
+  cursor: number,
+  width: number,
+): { nextValue: string; nextCursor: number } {
+  const ranges = getVisualLineRanges(value, width);
+  if (ranges.length === 0) {
+    return { nextValue: value, nextCursor: cursor };
+  }
+
+  let target = ranges[ranges.length - 1]!;
+  if (cursor < value.length) {
+    for (let i = 0; i < ranges.length; i++) {
+      const current = ranges[i]!;
+      const next = ranges[i + 1];
+
+      if (cursor < current.end) {
+        target = current;
+        break;
+      }
+
+      if (!next || cursor < next.start) {
+        target = current;
+        break;
+      }
+    }
+  }
+
+  const nextValue =
+    value.slice(0, target.removeStart) +
+    value.slice(target.removeEnd);
+  const nextCursor = Math.min(target.removeStart, nextValue.length);
+
+  return { nextValue, nextCursor };
+}
+
 export default function TextInput({
   value: originalValue,
   onChange,
@@ -77,13 +182,18 @@ export default function TextInput({
   focus = true,
   showCursor = true,
   cursorToEnd = 0,
+  accentColor,
+  mutedColor,
 }: TextInputProps) {
+  const containerRef = useRef<DOMElement | null>(null);
   const [cursorOffset, setCursorOffset] = useState(originalValue.length);
+  const [inputWidth, setInputWidth] = useState(0);
   const valueRef = useRef(originalValue);
   const cursorOffsetRef = useRef(originalValue.length);
   const pasteMapRef = useRef<Map<number, { text: string; lineCount: number; id: number }>>(new Map());
   const pasteCounterRef = useRef(0);
   const bracketedPasteBufferRef = useRef<string | null>(null);
+  const { stdout } = useStdout();
 
   useEffect(() => {
     valueRef.current = originalValue;
@@ -116,13 +226,38 @@ export default function TextInput({
     }
   }, [originalValue]);
 
+  useEffect(() => {
+    const fallbackWidth = stdout.columns ?? 0;
+    if (!containerRef.current) {
+      if (fallbackWidth > 0) {
+        setInputWidth((current) => (current === fallbackWidth ? current : fallbackWidth));
+      }
+      return;
+    }
+
+    const measuredWidth = measureElement(containerRef.current).width;
+    const nextWidth = measuredWidth > 0 ? measuredWidth : fallbackWidth;
+    if (nextWidth > 0) {
+      setInputWidth((current) => (current === nextWidth ? current : nextWidth));
+    }
+  });
+
   // Build a paste badge string
   function pasteBadge(entry: { id: number; lineCount: number }): string {
-    return chalk.dim.cyan(`[Pasted text #${entry.id} +${entry.lineCount} lines]`);
+    return applyThemeColor(chalk.dim as ChalkStyle, accentColor, `[Pasted text #${entry.id} +${entry.lineCount} lines]`);
+  }
+
+  // Detect slash command token length: "/command" portion before first space
+  function getSlashCommandEnd(): number {
+    if (!originalValue.startsWith("/")) return 0;
+    const spaceIdx = originalValue.indexOf(" ");
+    return spaceIdx === -1 ? originalValue.length : spaceIdx;
   }
 
   // Build a rendered string with a fake cursor and paste badges
   function buildRendered(): string {
+    const cmdEnd = getSlashCommandEnd();
+
     if (showCursor && focus) {
       if (originalValue.length === 0) return chalk.inverse(" ");
 
@@ -142,7 +277,15 @@ export default function TextInput({
             result += entry ? pasteBadge(entry) : "";
           }
         } else if (i === cursorOffset) {
-          result += char === "\n" ? chalk.inverse(" ") + "\n" : chalk.inverse(char);
+          if (char === "\n") {
+            result += chalk.inverse(" ") + "\n";
+          } else if (cmdEnd > 0 && i < cmdEnd) {
+            result += applyThemeColor(chalk.inverse as ChalkStyle, accentColor, char);
+          } else {
+            result += chalk.inverse(char);
+          }
+        } else if (cmdEnd > 0 && i < cmdEnd) {
+          result += applyThemeColor(chalk as ChalkStyle, accentColor, char);
         } else {
           result += char;
         }
@@ -157,23 +300,27 @@ export default function TextInput({
     let result = "";
     const pasteIds = [...pasteMapRef.current.keys()].sort((a, b) => a - b);
     let pasteIdx = 0;
+    let i = 0;
     for (const char of originalValue) {
       if (char === PASTE_MARKER) {
         const entry = pasteIdx < pasteIds.length ? pasteMapRef.current.get(pasteIds[pasteIdx]!) : undefined;
         pasteIdx++;
         result += entry ? pasteBadge(entry) : "";
+      } else if (cmdEnd > 0 && i < cmdEnd) {
+        result += applyThemeColor(chalk as ChalkStyle, accentColor, char);
       } else {
         result += char;
       }
+      i++;
     }
     return result;
   }
 
   const renderedPlaceholder =
     showCursor && focus && placeholder.length > 0
-      ? chalk.inverse(placeholder[0]) + chalk.grey(placeholder.slice(1))
+      ? chalk.inverse(placeholder[0]) + applyThemeColor(chalk.dim as ChalkStyle, mutedColor, placeholder.slice(1))
       : placeholder
-        ? chalk.grey(placeholder)
+        ? applyThemeColor(chalk.dim as ChalkStyle, mutedColor, placeholder)
         : undefined;
 
   function sanitizeInput(raw: string): string {
@@ -282,14 +429,15 @@ export default function TextInput({
           currentValue.slice(currentCursor);
         nextCursor = boundary;
       }
-      // ── Delete to start of line: Ctrl+U / Cmd+Backspace ──
+      // ── Delete current visual line: Ctrl+U / Cmd+Backspace ──
       else if (key.ctrl && input === "u") {
-        // Find the start of the current line (nearest \n before cursor, or 0)
-        const lineStart = currentValue.lastIndexOf("\n", currentCursor - 1) + 1;
-        nextValue =
-          currentValue.slice(0, lineStart) +
-          currentValue.slice(currentCursor);
-        nextCursor = lineStart;
+        const deleted = deleteCurrentVisualLine(
+          currentValue,
+          currentCursor,
+          inputWidth,
+        );
+        nextValue = deleted.nextValue;
+        nextCursor = deleted.nextCursor;
       }
       // ── Delete to end of line: Ctrl+K ──
       else if (key.ctrl && input === "k") {
@@ -442,18 +590,18 @@ export default function TextInput({
   );
 
   if (originalValue.length === 0 && renderedPlaceholder) {
-    return <Text>{renderedPlaceholder}</Text>;
+    return (
+      <Box ref={containerRef} flexGrow={1}>
+        <Text>{renderedPlaceholder}</Text>
+      </Box>
+    );
   }
 
   const rendered = buildRendered();
   const lines = rendered.split("\n");
 
-  if (lines.length === 1) {
-    return <Text>{rendered}</Text>;
-  }
-
   return (
-    <Box flexDirection="column">
+    <Box ref={containerRef} flexDirection="column" flexGrow={1}>
       {lines.map((line, i) => (
         <Text key={i}>{line || " "}</Text>
       ))}

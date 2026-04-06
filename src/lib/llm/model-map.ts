@@ -1,3 +1,5 @@
+import { OPENAI_PROVIDER_MODELS } from "./provider-catalog";
+
 const OPENAI_MODEL_MAP: Record<string, string> = {
   "gpt-5.4": "gpt-5.4",
   "gpt-5.4-mini": "gpt-5.4-mini",
@@ -11,7 +13,7 @@ const OPENAI_MODEL_MAP: Record<string, string> = {
 };
 
 /** Models available via OpenAI OAuth (shown in /config model). */
-export const AVAILABLE_MODELS = ["gpt-5.4", "gpt-5.4-mini", "o3", "o4-mini"] as const;
+export const AVAILABLE_MODELS = OPENAI_PROVIDER_MODELS;
 export type AvailableModel = (typeof AVAILABLE_MODELS)[number];
 
 export function resolveOpenAIModel(model?: string): string {

@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, test } from "vitest";
 import { render } from "ink-testing-library";
+import { Box } from "ink";
 import TextInput from "@/tui/text-input";
 
 describe("TextInput burst input handling", () => {
@@ -75,6 +76,32 @@ describe("TextInput burst input handling", () => {
 
     expect(lastFrame()).not.toContain("/quit");
     expect(lastFrame()).toContain("[Pasted text #1 +2 lines]");
+    unmount();
+  });
+
+  test("ctrl+u deletes only the current wrapped visual line", async () => {
+    const initialValue =
+      "This is a long wrapped line that spans multiple visual rows inside the prompt because the available width is narrow.";
+
+    function Wrapper() {
+      const [value, setValue] = React.useState(initialValue);
+      return (
+        <Box width={40}>
+          <TextInput value={value} onChange={setValue} focus showCursor />
+        </Box>
+      );
+    }
+
+    const { stdin, lastFrame, unmount } = render(<Wrapper />);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdin.write("\u0015");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(lastFrame()).not.toBe("");
+    expect(lastFrame()).toContain("multiple visual rows inside the prompt");
+    expect(lastFrame()).not.toContain("because the available");
+    expect(lastFrame()).not.toContain("width is narrow.");
     unmount();
   });
 });

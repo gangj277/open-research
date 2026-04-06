@@ -7,72 +7,71 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Static, Text, useApp, useInput } from "ink";
 import TextInput from "@/tui/text-input";
-import type { ProposedUpdate, AgentMode, PlanningState, ResearchCharter } from "@/lib/agent/state";
+import { ThemeProvider, getThemeColors } from "@/tui/theme";
+import type { ProposedUpdate, AgentMode, PlanningState } from "@/lib/agent/state";
 import type { LLMMessage } from "@/lib/llm/types";
 import { scanWorkspace } from "@/lib/workspace/scan";
-import { initWorkspace, loadWorkspaceProject } from "@/lib/workspace/project";
 import { createProviderFromStoredAuth } from "@/lib/llm/provider-factory";
 import { runAgentTurn } from "@/lib/agent/runtime";
 import { listAvailableSkills } from "@/lib/skills/registry";
 import { classifyUpdateRisk } from "@/lib/agent/review-policy";
 import { applyProposedUpdate } from "@/lib/workspace/apply-update";
 import { appendSessionEvent, listSessions, loadSessionHistory } from "@/lib/workspace/sessions";
-import { loginWithBrowser } from "@/lib/auth/login";
-import { importCodexAuth } from "@/lib/auth/import-codex";
-import { loadStoredAuth, clearStoredAuth } from "@/lib/auth/store";
-import { getAuthStatus } from "@/lib/auth/status";
 import {
   ensureOpenResearchConfig,
-  loadOpenResearchConfig,
   saveOpenResearchConfig,
-  themeValues,
+  getConfiguredOpenAIApiKey,
   type OpenResearchConfig,
   type Theme,
 } from "@/lib/config/store";
-import { AVAILABLE_MODELS } from "@/lib/llm/model-map";
+import { getAvailableModels } from "@/lib/llm/provider-catalog";
+import { hasConfiguredProvider } from "@/lib/llm/provider-resolution";
 import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { SessionPicker } from "@/tui/session-picker";
-import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
+import { getPendingQuestion, clearPendingQuestion, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
+import { initTaskStore, getVisibleTasks, clearAllTasks, type Task } from "@/lib/agent/tools/tasks";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
-import { loadAllMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
-import { generateInitialAgentsMd } from "@/lib/workspace/init-agents-md";
-import { getSemanticScholarApiKey, getOpenAlexApiKey } from "@/lib/config/store";
-import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
+import type { PreviewServer } from "@/lib/preview/server";
+import { themeValues } from "@/lib/config/store";
+import type { SubAgentProgress } from "@/lib/agent/subagent";
 import {
-  estimateConversationTokens,
-  getContextWindow,
-  getCompactThreshold,
-  maybeCompact as doCompact,
-  manualCompact,
-} from "@/lib/agent/context-manager";
-import type { ToolActivity } from "@/lib/agent/runtime";
-import {
-  SLASH_COMMANDS,
   matchSlashCommand,
   getUnifiedSuggestions,
   extractAtMention,
   getFileSuggestions,
   truncate,
-  type SlashCommand,
   type Suggestion,
   type SkillSummary,
   type WorkspaceFile,
 } from "@/tui/commands";
 import {
   HomeScreen as HomeScreenComponent,
-  UserMessage,
-  AgentMessage,
-  SystemMessage as SystemMessageComponent,
+  SubAgentIndicator,
   PendingUpdateCard,
   QuestionCard,
   SuggestionDropdown,
   PromptPrefix,
   FooterBar,
+  TaskPanel,
   type SuggestionItem,
 } from "@/tui/components";
+import {
+  createSentenceStreamBuffer,
+  splitMessagesForRender,
+  type ConversationMessage,
+} from "@/tui/streaming";
+import { insetWidth } from "@/tui/layout";
+
+// ── Extracted modules ──────────────────────────────────────────────────────
+import { useAnimatedFrame } from "@/tui/hooks/use-animated-frame";
+import { useTerminalWidth } from "@/tui/hooks/use-terminal-width";
+import { executeSlashCommand, type SlashCommandContext } from "@/tui/hooks/use-slash-commands";
+import { buildToolSummary } from "@/tui/helpers/tool-summary";
+import { parseCharterYaml } from "@/tui/helpers/charter";
+import { renderConversationMessage } from "@/tui/helpers/render-message";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -81,43 +80,6 @@ export interface AppState {
   workspacePath: string | null;
   screen: "home" | "workspace";
   pendingUpdates: ProposedUpdate[];
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
-
-function useAnimatedFrame(active: boolean) {
-  const [index, setIndex] = useState(0);
-  useEffect(() => {
-    if (!active) { setIndex(0); return; }
-    const timer = setInterval(() => setIndex((v) => (v + 1) % SPINNER_FRAMES.length), 120);
-    return () => clearInterval(timer);
-  }, [active]);
-  return SPINNER_FRAMES[index] ?? SPINNER_FRAMES[0];
-}
-
-function parseCharterYaml(raw: string): import("@/lib/agent/state").ResearchCharter {
-  const id = crypto.randomUUID();
-  const getField = (name: string): string => {
-    const match = raw.match(new RegExp(`^${name}:\\s*\\|?\\s*\\n((?:  .+\\n?)*)`, "m"));
-    return match?.[1]?.replace(/^ {2}/gm, "").trim() ?? "";
-  };
-  const getList = (name: string): string[] => {
-    const match = raw.match(new RegExp(`^${name}:\\s*\\n((?:\\s*- .+\\n?)*)`, "m"));
-    if (!match?.[1]) return [];
-    return match[1].split("\n").map((line) => line.replace(/^\s*-\s*/, "").trim()).filter(Boolean);
-  };
-  return {
-    id,
-    researchQuestion: getField("researchQuestion") || raw.split("\n")[0] || "Research question",
-    successCriteria: getList("successCriteria"),
-    scopeBoundaries: getList("scopeBoundaries"),
-    knownStartingPoints: getList("knownStartingPoints"),
-    proposedSteps: getList("proposedSteps"),
-    rawMarkdown: raw,
-    createdAt: new Date().toISOString(),
-  };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -138,7 +100,8 @@ export function App({
   const [workspacePath, setWorkspacePath] = useState(initialState.workspacePath);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [messages, setMessages] = useState<Array<{ role: "user" | "assistant" | "system"; text: string }>>([]);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [messageRenderVersion, setMessageRenderVersion] = useState(0);
   const [history, setHistory] = useState<LLMMessage[]>([]);
   const [activeSkills, setActiveSkills] = useState<
     Array<{ id: string; name: string; description: string; prompt: string; skillDir: string }>
@@ -146,6 +109,12 @@ export function App({
   const [pendingUpdates, setPendingUpdates] = useState(initialState.pendingUpdates);
   const [statusLine, setStatusLine] = useState("");
   const [currentToolActivity, setCurrentToolActivity] = useState<string>("");
+  const [turnToolCount, setTurnToolCount] = useState(0);
+  const [subAgentProgress, setSubAgentProgress] = useState<SubAgentProgress | null>(null);
+  const [toolActivityExpanded, setToolActivityExpanded] = useState(false);
+  const [taskPanelVisible, setTaskPanelVisible] = useState(true);
+  const [taskVersion, setTaskVersion] = useState(0);
+  const turnToolLogRef = useRef<Array<{ name: string; description: string; durationMs?: number }>>([]);
   const [sessionTokens, setSessionTokens] = useState<SessionTokenUsage>(() => createSessionUsage());
   const [tokenDisplay, setTokenDisplay] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -164,12 +133,20 @@ export function App({
   const deferredMessages = useDeferredValue(messages);
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
   const activityFrame = useAnimatedFrame(busy);
+  const terminalWidth = useTerminalWidth();
+  const contentWidth = insetWidth(terminalWidth, 2);
+  const panelInnerWidth = insetWidth(contentWidth, 4);
+  const panelBodyWidth = insetWidth(panelInnerWidth, 2);
 
   const [agentQuestion, setAgentQuestion] = useState<AskUserPendingQuestion | null>(null);
   const previewRef = useRef<PreviewServer | null>(null);
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isHome = deferredMessages.length === 0 && !busy;
+  const { staticMessages, dynamicMessages } = useMemo(
+    () => splitMessagesForRender(deferredMessages, busy),
+    [busy, deferredMessages],
+  );
   const hasWorkspace = workspacePath !== null;
   const hasAuth = authStatus === "connected";
 
@@ -193,12 +170,18 @@ export function App({
 
   useEffect(() => {
     void (async () => {
-      const cfg = await ensureOpenResearchConfig({ homeDir });
+      const [cfg, storedOrDiskProviderConfigured] = await Promise.all([
+        ensureOpenResearchConfig({ homeDir }),
+        hasConfiguredProvider({ homeDir }),
+      ]);
+      const providerConfigured = Boolean(
+        process.env.OPENAI_API_KEY ||
+        getConfiguredOpenAIApiKey(cfg) ||
+        storedOrDiskProviderConfigured
+      );
       setConfig(cfg);
       setTheme(cfg.theme);
-      const auth = await loadStoredAuth({ homeDir });
-      setAuthStatus(auth ? "connected" : "missing");
-      // Check for updates (non-blocking)
+      setAuthStatus(providerConfigured ? "connected" : "missing");
       checkForUpdate().then((msg) => {
         if (msg) addSystemMessage(msg);
       });
@@ -211,6 +194,9 @@ export function App({
     void scanWorkspace(workspacePath).then((result) => {
       if (cancelled) return;
       startTransition(() => setWorkspaceFiles(result.files));
+    });
+    void initTaskStore(workspacePath).then(() => {
+      if (!cancelled) setTaskVersion((v) => v + 1);
     });
     return () => { cancelled = true; };
   }, [workspacePath]);
@@ -241,16 +227,13 @@ export function App({
   const atMention = useMemo(() => extractAtMention(input), [input]);
 
   const suggestions = useMemo((): Suggestion[] => {
-    // @ file mention trigger
     if (atMention) {
       return getFileSuggestions(atMention.partial, workspaceFiles);
     }
-    // / command trigger
     if (!input.startsWith("/")) return [];
     return getUnifiedSuggestions(input, skills);
   }, [input, skills, atMention, workspaceFiles]);
 
-  // Reset selection when suggestions change
   useEffect(() => {
     setSelectedSuggestion(-1);
   }, [suggestions.length, input]);
@@ -259,7 +242,6 @@ export function App({
 
   function applySuggestion(s: Suggestion): void {
     if (s.kind === "file" && atMention) {
-      // Replace @partial with @path, preserving text before and after
       const before = input.slice(0, atMention.start);
       setInput(`${before}@${s.path} `);
     } else if (s.kind === "command" || s.kind === "skill") {
@@ -274,7 +256,6 @@ export function App({
     const idx = selectedSuggestion >= 0 ? selectedSuggestion : 0;
     const target = suggestions[idx];
     if (!target) return false;
-    // Don't autocomplete if already an exact command match
     const exact = matchSlashCommand(input.trim());
     if (exact) return false;
     applySuggestion(target);
@@ -284,7 +265,7 @@ export function App({
   function handleDropdownUp() {
     if (!dropdownVisible) return;
     setSelectedSuggestion((prev) => {
-      const max = Math.min(suggestions.length, 8) - 1;
+      const max = suggestions.length - 1;
       return prev <= 0 ? max : prev - 1;
     });
   }
@@ -292,7 +273,7 @@ export function App({
   function handleDropdownDown() {
     if (!dropdownVisible) return;
     setSelectedSuggestion((prev) => {
-      const max = Math.min(suggestions.length, 8) - 1;
+      const max = suggestions.length - 1;
       return prev >= max ? 0 : prev + 1;
     });
   }
@@ -305,453 +286,47 @@ export function App({
     return true;
   }
 
-  // ── Slash command execution ─────────────────────────────────────────────
-
-  async function executeSlashCommand(cmd: SlashCommand, args: string) {
-    switch (cmd.name) {
-      case "auth": {
-        addSystemMessage("Opening browser for OpenAI login...");
-        setBusy(true);
-        try {
-          const result = await loginWithBrowser({ homeDir });
-          setAuthStatus("connected");
-          addSystemMessage(`Connected OpenAI account ${result.tokens.accountId}`);
-        } catch (err) {
-          addSystemMessage(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          setBusy(false);
-        }
-        break;
-      }
-      case "auth-codex": {
-        addSystemMessage("Importing Codex CLI auth...");
-        setBusy(true);
-        try {
-          const result = await importCodexAuth({ homeDir });
-          setAuthStatus("connected");
-          addSystemMessage(`Imported Codex auth for account ${result.accountId}`);
-        } catch (err) {
-          addSystemMessage(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          setBusy(false);
-        }
-        break;
-      }
-      case "auth-status": {
-        const status = await getAuthStatus({ homeDir });
-        if (!status.connected && !("stored" in status)) {
-          addSystemMessage(status.message);
-        } else {
-          addSystemMessage(`Connection: ${status.connected ? "connected" : "degraded"} — ${status.message}`);
-        }
-        break;
-      }
-      case "logout": {
-        await clearStoredAuth({ homeDir });
-        setAuthStatus("missing");
-        addSystemMessage("Cleared stored auth.");
-        break;
-      }
-      case "init": {
-        const target = process.cwd();
-        setBusy(true);
-        try {
-          // Create workspace if needed
-          const existing = await loadWorkspaceProject(target);
-          if (!existing) {
-            await initWorkspace({ workspaceDir: target });
-            addSystemMessage(`Workspace initialized at ${target}`);
-          }
-          setWorkspacePath(target);
-
-          // Always scan + generate/update AGENTS.md
-          if (!hasAuth) {
-            addSystemMessage("Run /auth first — AGENTS.md generation requires auth.");
-            break;
-          }
-          addSystemMessage("Scanning workspace and updating AGENTS.md...");
-          const provider = await createProviderFromStoredAuth({ homeDir });
-          const result = await generateInitialAgentsMd({
-            workspaceDir: target,
-            provider,
-            model: "gpt-5.4-mini",
-          });
-          addSystemMessage("AGENTS.md ready. Project context will load on every session.");
-          const scanned = await scanWorkspace(target);
-          startTransition(() => setWorkspaceFiles(scanned.files));
-        } catch (err) {
-          addSystemMessage(`Init failed: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          setBusy(false);
-        }
-        break;
-      }
-      case "skills": {
-        const available = await listAvailableSkills({ homeDir });
-        if (available.length === 0) {
-          addSystemMessage("No skills found.");
-        } else {
-          for (const skill of available) {
-            addSystemMessage(`${skill.name} [${skill.source}] — ${skill.description}`);
-          }
-        }
-        break;
-      }
-      case "clear": {
-        setMessages([]);
-        setHistory([]);
-        setActiveSkills([]);
-        setPendingUpdates([]);
-        setStatusLine("");
-        setPlanningState({ status: "idle", planningHistory: [] });
-        resetPendingQuestions();
-        addSystemMessage("Conversation cleared.");
-        break;
-      }
-      case "resume": {
-        if (!workspacePath) { addSystemMessage("No workspace. Run /init first."); break; }
-        const foundSessions = await listSessions(workspacePath);
-        if (foundSessions.length === 0) { addSystemMessage("No previous sessions found."); break; }
-        setResumeSessions(foundSessions);
-        setScreen("resume");
-        setComposerFocused(false);
-        break;
-      }
-      case "config": {
-        if (!args) {
-          setScreen("config");
-          break;
-        }
-        const [configKey, ...valueParts] = args.split(/\s+/);
-        const configValue = valueParts.join(" ");
-        if (configKey === "model") {
-          if (!configValue || !(AVAILABLE_MODELS as readonly string[]).includes(configValue)) {
-            addSystemMessage(`Invalid model. Options: ${AVAILABLE_MODELS.join(", ")}`);
-            break;
-          }
-          if (config) {
-            const updated = { ...config, defaults: { ...config.defaults, model: configValue } };
-            setConfig(updated);
-            await saveOpenResearchConfig(updated, { homeDir });
-          }
-          addSystemMessage(`Model set to ${configValue}.`);
-        } else if (configKey === "theme") {
-          if (!configValue || !(themeValues as readonly string[]).includes(configValue)) {
-            addSystemMessage(`Invalid theme. Options: ${themeValues.join(", ")}`);
-            break;
-          }
-          const newTheme = configValue as Theme;
-          setTheme(newTheme);
-          if (config) {
-            const updated = { ...config, theme: newTheme };
-            setConfig(updated);
-            await saveOpenResearchConfig(updated, { homeDir });
-          }
-          addSystemMessage(`Theme set to ${newTheme}.`);
-        } else if (configKey === "mode") {
-          const validModes: AgentMode[] = ["manual-review", "auto-approve", "auto-research"];
-          if (!configValue || !validModes.includes(configValue as AgentMode)) {
-            addSystemMessage(`Invalid mode. Options: ${validModes.join(", ")}`);
-            break;
-          }
-          setAgentMode(configValue as AgentMode);
-          addSystemMessage(`Mode set to ${configValue}.`);
-        } else {
-          addSystemMessage(`Unknown config key: ${configKey}. Available: model, theme, mode`);
-        }
-        break;
-      }
-      case "help": {
-        addSystemMessage("Available commands:");
-        for (const c of SLASH_COMMANDS) {
-          const aliases = c.aliases.length > 0 ? ` (${c.aliases.join(", ")})` : "";
-          addSystemMessage(`  /${c.name}${aliases} — ${c.description}`);
-        }
-        addSystemMessage("");
-        addSystemMessage("Keyboard shortcuts:");
-        addSystemMessage("  Shift+Tab  cycle mode (manual-review → auto-approve → auto-research)");
-        addSystemMessage("  a  accept next pending update");
-        addSystemMessage("  r  reject next pending update");
-        addSystemMessage("  Esc  unfocus prompt");
-        break;
-      }
-      case "compact": {
-        if (history.length === 0) {
-          addSystemMessage("Nothing to compact — conversation is empty.");
-          break;
-        }
-        const customInstructions = args || undefined;
-        addSystemMessage(customInstructions
-          ? `Compacting conversation (preserving: ${customInstructions})...`
-          : "Compacting conversation...");
-        setBusy(true);
-        try {
-          const provider = await createProviderFromStoredAuth({ homeDir });
-          const msgs = [{ role: "system" as const, content: "compaction" }, ...history.map((m) => m as any)];
-          const { messages: compacted, didCompact } = await manualCompact(
-            msgs, config?.defaults.model ?? "gpt-5.4", provider, sessionTokens, customInstructions
-          );
-          if (didCompact) {
-            const newHistory = compacted.filter((m: any) => m.role !== "system").map((m: any) => ({
-              role: m.role, content: m.content,
-            }));
-            setHistory(newHistory as any);
-            const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-            setTokenDisplay(`${k(sessionTokens.estimatedCurrentTokens)} ctx · ${k(sessionTokens.totalTokens)} total`);
-            addSystemMessage(`Compacted. Context reduced to ~${Math.round(sessionTokens.estimatedCurrentTokens / 1000)}k tokens.`);
-          } else {
-            addSystemMessage("Nothing to compact — conversation too short.");
-          }
-        } catch (err) {
-          addSystemMessage(`Compaction failed: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          setBusy(false);
-        }
-        break;
-      }
-      case "cost": {
-        const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-        const c = sessionTokens.cumulative;
-        addSystemMessage("Session token usage:");
-        addSystemMessage(`  Input:     ${k(c.input)} tokens`);
-        addSystemMessage(`  Output:    ${k(c.output)} tokens`);
-        if (c.reasoning > 0) addSystemMessage(`  Reasoning: ${k(c.reasoning)} tokens`);
-        if (c.cache.read > 0) addSystemMessage(`  Cache read:  ${k(c.cache.read)} tokens`);
-        if (c.cache.write > 0) addSystemMessage(`  Cache write: ${k(c.cache.write)} tokens`);
-        addSystemMessage(`  Total:     ${k(c.total)} tokens`);
-        addSystemMessage(`  Context:   ~${k(sessionTokens.estimatedCurrentTokens)} (current window)`);
-        addSystemMessage(`  Compactions: ${sessionTokens.compactionCount}`);
-        break;
-      }
-      case "context": {
-        const model = config?.defaults.model ?? "gpt-5.4";
-        const window = getContextWindow(model);
-        const threshold = getCompactThreshold(model);
-        const current = sessionTokens.estimatedCurrentTokens || estimateConversationTokens(
-          history.map((m) => m as any)
-        );
-        const pct = Math.round((current / window) * 100);
-        const barWidth = 40;
-        const filled = Math.round((pct / 100) * barWidth);
-        const bar = "\u2588".repeat(filled) + "\u2591".repeat(barWidth - filled);
-        const color = pct > 90 ? "red" : pct > 70 ? "yellow" : "green";
-        addSystemMessage(`Context window: ${model} (${(window / 1000).toFixed(0)}k)`);
-        addSystemMessage(`  [${bar}] ${pct}%`);
-        addSystemMessage(`  ${(current / 1000).toFixed(1)}k / ${(window / 1000).toFixed(0)}k tokens used`);
-        addSystemMessage(`  Auto-compact at ${(threshold / 1000).toFixed(0)}k (90%)`);
-        if (pct > 80) {
-          addSystemMessage("  Tip: run /compact to free space, or /clear to start fresh.");
-        }
-        break;
-      }
-      case "btw": {
-        if (!args) {
-          addSystemMessage("Usage: /btw <your side question>");
-          break;
-        }
-        if (!hasAuth) {
-          addSystemMessage("Not connected. Run /auth first.");
-          break;
-        }
-        addSystemMessage(`Side question: ${args}`);
-        setBusy(true);
-        try {
-          const provider = await createProviderFromStoredAuth({ homeDir });
-          const response = await provider.callLLM({
-            messages: [
-              { role: "system", content: "Answer this quick side question concisely. Do not reference any prior conversation." },
-              { role: "user", content: args },
-            ],
-            model: config?.defaults.model ?? "gpt-5.4",
-            maxTokens: 1000,
-          });
-          addSystemMessage(`Answer: ${response.content}`);
-        } catch (err) {
-          addSystemMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          setBusy(false);
-        }
-        break;
-      }
-      case "export": {
-        const fileName = args?.trim() || "conversation-export.md";
-        const exportPath = require("node:path").resolve(workspacePath ?? process.cwd(), fileName);
-        const lines: string[] = [`# Open Research — Conversation Export\n`];
-        for (const msg of messages) {
-          if (msg.role === "user") lines.push(`## You\n${msg.text}\n`);
-          else if (msg.role === "assistant") lines.push(`## Agent\n${msg.text}\n`);
-          else lines.push(`> ${msg.text}\n`);
-        }
-        try {
-          const fsModule = require("node:fs/promises");
-          await fsModule.writeFile(exportPath, lines.join("\n"), "utf8");
-          addSystemMessage(`Exported ${messages.length} messages to ${exportPath}`);
-        } catch (err) {
-          addSystemMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        break;
-      }
-      case "diff": {
-        if (!workspacePath) {
-          addSystemMessage("No workspace active.");
-          break;
-        }
-        try {
-          const { execSync } = require("node:child_process");
-          const gitStatus = execSync("git status --short 2>/dev/null || echo 'Not a git repo'", {
-            cwd: workspacePath, encoding: "utf8",
-          }).trim();
-          if (!gitStatus || gitStatus === "Not a git repo") {
-            addSystemMessage("No changes detected (not a git repo or no modifications).");
-          } else {
-            addSystemMessage("Changed files:");
-            for (const line of gitStatus.split("\n")) {
-              addSystemMessage(`  ${line}`);
-            }
-          }
-        } catch {
-          addSystemMessage("Could not check changes.");
-        }
-        break;
-      }
-      case "api-keys": {
-        if (!args) {
-          const ssKey = getSemanticScholarApiKey(config);
-          const oaKey = getOpenAlexApiKey(config);
-          addSystemMessage("API Keys:");
-          addSystemMessage(`  Semantic Scholar: ${ssKey ? ssKey.slice(0, 8) + "..." : "not set"}`);
-          addSystemMessage(`  OpenAlex: ${oaKey ? oaKey.slice(0, 8) + "..." : "not set"}`);
-          addSystemMessage("");
-          addSystemMessage("Set via CLI:");
-          addSystemMessage("  /api-keys semantic-scholar YOUR_KEY");
-          addSystemMessage("  /api-keys openalex YOUR_KEY");
-          addSystemMessage("");
-          addSystemMessage("Or set environment variables:");
-          addSystemMessage("  export SEMANTIC_SCHOLAR_API_KEY=your_key");
-          addSystemMessage("  export OPENALEX_API_KEY=your_key");
-          break;
-        }
-        const [keyName, ...keyParts] = args.split(/\s+/);
-        const keyValue = keyParts.join("").trim();
-        if (!keyValue) {
-          addSystemMessage("Usage: /api-keys <semantic-scholar|openalex> <key>");
-          break;
-        }
-        if (config) {
-          const apiKeys = config.apiKeys ?? {};
-          if (keyName === "semantic-scholar" || keyName === "ss") {
-            apiKeys.semanticScholar = keyValue;
-          } else if (keyName === "openalex" || keyName === "oa") {
-            apiKeys.openAlex = keyValue;
-          } else {
-            addSystemMessage(`Unknown key: ${keyName}. Use semantic-scholar or openalex.`);
-            break;
-          }
-          const updated = { ...config, apiKeys };
-          setConfig(updated);
-          await saveOpenResearchConfig(updated, { homeDir });
-          addSystemMessage(`${keyName} API key saved.`);
-        }
-        break;
-      }
-      case "doctor": {
-        addSystemMessage("Running diagnostics...");
-        // Auth
-        const authResult = await getAuthStatus({ homeDir });
-        addSystemMessage(`  Auth: ${authResult.connected ? "connected" : "not connected"} — ${authResult.message}`);
-        // Workspace
-        addSystemMessage(`  Workspace: ${workspacePath ? workspacePath : "none"}`);
-        addSystemMessage(`  Files: ${workspaceFiles.length}`);
-        // Skills
-        addSystemMessage(`  Skills: ${skills.length} loaded`);
-        // Memory
-        // API keys
-        const ssKey = getSemanticScholarApiKey(config);
-        const oaKey = getOpenAlexApiKey(config);
-        addSystemMessage(`  Semantic Scholar API: ${ssKey ? "configured" : "not set (rate-limited)"}`);
-        addSystemMessage(`  OpenAlex API: ${oaKey ? "configured" : "not set (limited)"}`);
-        const mems = await loadAllMemories({ homeDir });
-        addSystemMessage(`  Memories: ${mems.length} stored`);
-        // Node
-        addSystemMessage(`  Node: ${process.version}`);
-        // Tools check
-        const toolChecks = ["python3 --version", "pdflatex --version", "git --version"];
-        for (const cmd of toolChecks) {
-          try {
-            const { execSync } = require("node:child_process");
-            const out = execSync(cmd + " 2>&1", { encoding: "utf8", timeout: 3000 }).trim().split("\n")[0];
-            addSystemMessage(`  ${cmd.split(" ")[0]}: ${out}`);
-          } catch {
-            addSystemMessage(`  ${cmd.split(" ")[0]}: not found`);
-          }
-        }
-        addSystemMessage("Diagnostics complete.");
-        break;
-      }
-      case "preview": {
-        if (!args) {
-          addSystemMessage("Usage: /preview <path-to-tex-file>");
-          addSystemMessage("Example: /preview papers/draft.tex");
-          break;
-        }
-        const texPath = args.trim();
-        const resolvedTex = require("node:path").isAbsolute(texPath) ? texPath : require("node:path").resolve(workspacePath ?? process.cwd(), texPath);
-        try {
-          // Close existing preview if any
-          if (previewRef.current) {
-            previewRef.current.close();
-          }
-          const preview = await startPreviewServer(resolvedTex);
-          previewRef.current = preview;
-          addSystemMessage(`Live preview started at ${preview.url}`);
-          addSystemMessage("Auto-reloads when the file changes. Close with /preview stop");
-          // Open in browser
-          const openModule = await import("open");
-          await openModule.default(preview.url);
-        } catch (err) {
-          addSystemMessage(`Preview failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        break;
-      }
-      case "memory": {
-        if (args === "clear") {
-          await clearMemories({ homeDir });
-          addSystemMessage("All memories cleared.");
-          break;
-        }
-        if (args.startsWith("delete ")) {
-          const memId = args.slice(7).trim();
-          const deleted = await deleteMemory(memId, { homeDir });
-          addSystemMessage(deleted ? `Deleted memory ${memId.slice(0, 8)}...` : "Memory not found.");
-          break;
-        }
-        const mems = await loadAllMemories({ homeDir });
-        if (mems.length === 0) {
-          addSystemMessage("No memories stored yet. I'll learn about you as we talk.");
-        } else {
-          addSystemMessage(`${mems.length} memories:`);
-          for (const m of mems) {
-            addSystemMessage(`  [${m.category}] ${m.content}`);
-            addSystemMessage(`    id: ${m.id.slice(0, 8)}... · reinforced ${m.relevanceCount}x`);
-          }
-          addSystemMessage("");
-          addSystemMessage("  /memory clear — delete all");
-          addSystemMessage("  /memory delete <id> — delete one");
-        }
-        break;
-      }
-      case "exit": {
-        app.exit();
-        break;
-      }
-    }
-  }
+  // ── Message helpers ────────────────────────────────────────────────────
 
   function addSystemMessage(text: string) {
     startTransition(() => {
       setMessages((current) => [...current, { role: "system", text }]);
     });
   }
+
+  function addAssistantMessage(text: string) {
+    if (!text) return;
+    startTransition(() => {
+      setMessages((current) => {
+        const next = [...current];
+        const last = next[next.length - 1];
+        if (!last || last.role !== "assistant") {
+          next.push({ role: "assistant", text });
+        } else {
+          last.text += text;
+        }
+        return next;
+      });
+    });
+  }
+
+  function replaceMessages(nextMessages: ConversationMessage[]) {
+    startTransition(() => {
+      setMessageRenderVersion((current) => current + 1);
+      setMessages(nextMessages);
+    });
+  }
+
+  // ── Slash command context ──────────────────────────────────────────────
+
+  const slashCtx: SlashCommandContext = {
+    homeDir, workspacePath, hasAuth, config, messages, history, skills, workspaceFiles,
+    sessionId, sessionTokens, agentMode, previewRef,
+    addSystemMessage, replaceMessages, setBusy, setAuthStatus, setWorkspacePath, setWorkspaceFiles,
+    setConfig, setTheme, setAgentMode, setHistory, setActiveSkills, setPendingUpdates,
+    setStatusLine, setPlanningState, setTokenDisplay: setTokenDisplay,
+    setScreen, setComposerFocused, setResumeSessions, exitApp: () => app.exit(),
+  };
 
   // ── Pending update review ───────────────────────────────────────────────
 
@@ -810,437 +385,7 @@ export function App({
     setComposerFocused(true);
   }
 
-  // ── Keyboard input ────────────────────────────────────────────────────
-
-  useInput((key, inputKey) => {
-    if (inputKey.ctrl && key === "c") {
-      if (busy) {
-        clearCtrlCPending();
-        if (abortRef.current) {
-          abortRef.current.abort();
-          addSystemMessage("Interrupting agent...");
-        }
-        return;
-      }
-
-      if (screen !== "main") {
-        clearCtrlCPending();
-        returnToMainScreen();
-        return;
-      }
-
-      if (planningState.status === "charter-review") {
-        clearCtrlCPending();
-        rejectCharter();
-        return;
-      }
-
-      if (ctrlCPending) {
-        clearCtrlCPending();
-        app.exit();
-        return;
-      }
-
-      armCtrlCExitWindow();
-      return;
-    }
-
-    if (ctrlCPending) {
-      clearCtrlCPending();
-    }
-
-    // Shift+Tab cycles agent mode
-    if (inputKey.shift && inputKey.tab) {
-      setAgentMode((prev) => {
-        const modes: AgentMode[] = ["manual-review", "auto-approve", "auto-research"];
-        const idx = (modes.indexOf(prev) + 1) % modes.length;
-        const next = modes[idx]!;
-        addSystemMessage(`Mode: ${next} (shift+tab to cycle)`);
-        return next;
-      });
-      return;
-    }
-    if (inputKey.escape) {
-      if (busy && abortRef.current) {
-        abortRef.current.abort();
-        addSystemMessage("Interrupting agent...");
-      } else if (planningState.status === "charter-review") {
-        rejectCharter();
-      } else {
-        setComposerFocused(false);
-      }
-      return;
-    }
-    if (!composerFocused) {
-      // Charter review shortcuts
-      if (planningState.status === "charter-review") {
-        if (key === "a") {
-          void approveCharter();
-          return;
-        }
-        if (key === "p") {
-          setPlanningState((prev) => ({ ...prev, status: "planning" }));
-          setComposerFocused(true);
-          addSystemMessage("Continue planning — type your feedback to refine the charter.");
-          return;
-        }
-      }
-      if (key === "a" && pendingUpdates.length > 0) {
-        void acceptNextPendingUpdate();
-        return;
-      }
-      if (key === "r" && pendingUpdates.length > 0) {
-        rejectNextPendingUpdate();
-        return;
-      }
-      if (key === "i" || (key.length === 1 && !inputKey.ctrl && !inputKey.meta && !inputKey.tab)) {
-        setComposerFocused(true);
-        if (key !== "i") setInput((c) => c + key);
-        return;
-      }
-    }
-  });
-
-  // ── Submit handler ──────────────────────────────────────────────────────
-
-  async function handleSubmit(value: string) {
-    // If a dropdown item is highlighted, select it instead of submitting
-    if (handleDropdownSelect()) return;
-
-    const trimmed = value.trim();
-    if (!trimmed) return;
-
-    // ── Answer a pending agent question ──────────────────────────────────
-    if (agentQuestion) {
-      const options = agentQuestion.question.options;
-      // Check if user typed a number to pick an option
-      const numChoice = parseInt(trimmed, 10);
-      if (!isNaN(numChoice) && numChoice >= 1 && numChoice <= options.length) {
-        const picked = options[numChoice - 1];
-        addSystemMessage(`> ${picked.label}`);
-        agentQuestion.resolve({
-          questionId: agentQuestion.question.id,
-          answer: picked.label,
-          isCustom: false,
-        });
-      } else {
-        // Custom answer
-        addSystemMessage(`> ${trimmed}`);
-        agentQuestion.resolve({
-          questionId: agentQuestion.question.id,
-          answer: trimmed,
-          isCustom: true,
-        });
-      }
-      clearPendingQuestion();
-      setAgentQuestion(null);
-      setInput("");
-      return;
-    }
-
-    if (busy) return;
-
-    // If typing a partial slash command, autocomplete instead of submitting
-    if (trimmed.startsWith("/") && !trimmed.includes(" ") && applyAutocomplete()) {
-      return;
-    }
-
-    setInput("");
-
-    // Slash command?
-    const match = matchSlashCommand(trimmed);
-    if (match) {
-      addSystemMessage(`> ${trimmed}`);
-      await executeSlashCommand(match.cmd, match.args);
-      return;
-    }
-
-    // Skill shorthand: /source-scout → activate skill via agent
-    if (trimmed.startsWith("/")) {
-      const skillName = trimmed.slice(1);
-      const matchedSkill = skills.find((s) => s.name === skillName);
-      if (matchedSkill) {
-        addSystemMessage(`> Activating skill: ${matchedSkill.name}`);
-        void sendToAgent(`/skill ${matchedSkill.name}`);
-        return;
-      }
-    }
-
-    // Guard: need auth
-    if (!hasAuth) {
-      addSystemMessage("Not connected. Run /auth to connect your OpenAI account first.");
-      return;
-    }
-
-    // Guard: need workspace
-    if (!hasWorkspace) {
-      addSystemMessage("No workspace. Run /init to initialize one in the current directory.");
-      return;
-    }
-
-    // Auto-research mode: route to planning flow
-    if (agentMode === "auto-research") {
-      if (planningState.status === "charter-review") {
-        // User is providing feedback on the charter
-        addSystemMessage(`> ${trimmed}`);
-        setPlanningState((prev) => ({ ...prev, status: "planning" }));
-        void sendToPlanningAgent(trimmed);
-        return;
-      }
-      // Start or continue planning
-      void sendToPlanningAgent(trimmed);
-      return;
-    }
-
-    void sendToAgent(trimmed);
-  }
-
-  async function sendToAgent(message: string) {
-    if (!workspacePath) return;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setBusy(true);
-    setComposerFocused(false);
-    startTransition(() => {
-      setMessages((current) => [...current, { role: "user", text: message }]);
-    });
-
-    try {
-      const provider = await createProviderFromStoredAuth({ homeDir });
-      const workspace = await scanWorkspace(workspacePath);
-      const workspaceContext = {
-        workspaceDir: workspacePath!,
-        runId: sessionId,
-        workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
-        availableKeys: workspace.files.map((f) => f.key),
-        fileLabels: Object.fromEntries(workspace.files.map((f) => [f.key, f.label])),
-      };
-
-      let assistantText = "";
-      const result = await runAgentTurn({
-        provider,
-        message,
-        history,
-        workspace: workspaceContext,
-        homeDir,
-        model: config?.defaults.model,
-        activeSkills,
-        signal: controller.signal,
-        sessionUsage: sessionTokens,
-        onTextDelta: (chunk) => {
-          assistantText += chunk;
-          startTransition(() => {
-            setMessages((current) => {
-              const next = [...current];
-              const last = next[next.length - 1];
-              if (!last || last.role !== "assistant") {
-                next.push({ role: "assistant", text: chunk });
-              } else {
-                last.text += chunk;
-              }
-              return next;
-            });
-          });
-        },
-        onToolActivity: (activity) => {
-          if (activity.type === "tool_start") {
-            setCurrentToolActivity(activity.description ?? activity.name);
-          } else {
-            const dur = activity.durationMs ? ` (${(activity.durationMs / 1000).toFixed(1)}s)` : "";
-            setCurrentToolActivity("");
-            addSystemMessage(`  \u2713 ${activity.description ?? activity.name}${dur}`);
-          }
-        },
-        onMemoryExtracted: (mems) => {
-          for (const m of mems) {
-            addSystemMessage(`  ◊ remembered: ${m}`);
-          }
-        },
-        onCompaction: () => {
-          addSystemMessage("  \u25CA Context compacted \u2014 older messages summarized");
-        },
-        onTokenUpdate: (u) => {
-          setSessionTokens({ ...u });
-          const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-          setTokenDisplay(`${k(u.estimatedCurrentTokens)} ctx \u00B7 ${k(u.totalTokens)} total`);
-        },
-      });
-
-      startTransition(() => {
-        setActiveSkills(result.activeSkills);
-        setHistory((current) => [
-          ...current,
-          { role: "user", content: message },
-          { role: "assistant", content: assistantText || result.text },
-        ]);
-      });
-
-      const reviewRequired: ProposedUpdate[] = [];
-      for (const update of result.proposedUpdates) {
-        if (agentMode === "auto-approve" || agentMode === "auto-research") {
-          await applyProposedUpdate(workspacePath, update);
-        } else {
-          const policy = classifyUpdateRisk(update);
-          if (policy.policy === "auto-apply") {
-            await applyProposedUpdate(workspacePath, update);
-          } else {
-            reviewRequired.push(update);
-          }
-        }
-      }
-
-      if (reviewRequired.length > 0) {
-        startTransition(() => setPendingUpdates((c) => [...c, ...reviewRequired]));
-      }
-
-      await appendSessionEvent(workspacePath, sessionId, {
-        type: "chat.turn",
-        timestamp: new Date().toISOString(),
-        payload: {
-          prompt: message,
-          response: assistantText || result.text,
-          proposedUpdates: result.proposedUpdates.map((u) => ({ key: u.key, summary: u.summary })),
-        },
-      });
-
-      const refreshed = await scanWorkspace(workspacePath);
-      startTransition(() => {
-        setWorkspaceFiles(refreshed.files);
-        setStatusLine(
-          reviewRequired.length > 0
-            ? `${reviewRequired.length} update(s) moved to review`
-            : "Turn complete"
-        );
-      });
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        startTransition(() => {
-          setMessages((current) => [
-            ...current,
-            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
-          ]);
-        });
-      }
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
-      setComposerFocused(true);
-      if (controller.signal.aborted) {
-        addSystemMessage("Agent interrupted.");
-      }
-    }
-  }
-
-  // ── Planning agent (auto-research mode) ─────────────────────────────────
-
-  async function sendToPlanningAgent(message: string) {
-    if (!workspacePath) return;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setBusy(true);
-    setComposerFocused(false);
-
-    setPlanningState((prev) => {
-      if (prev.status === "idle") {
-        addSystemMessage("Starting auto-research planning...");
-        return { ...prev, status: "planning" };
-      }
-      return prev;
-    });
-
-    startTransition(() => {
-      setMessages((current) => [...current, { role: "user", text: message }]);
-    });
-
-    try {
-      const provider = await createProviderFromStoredAuth({ homeDir });
-      const workspace = await scanWorkspace(workspacePath);
-      const workspaceContext = {
-        workspaceDir: workspacePath!,
-        runId: sessionId,
-        workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
-        availableKeys: workspace.files.map((f) => f.key),
-        fileLabels: Object.fromEntries(workspace.files.map((f) => [f.key, f.label])),
-      };
-
-      let assistantText = "";
-      const result = await runAgentTurn({
-        provider,
-        message,
-        history: planningState.planningHistory,
-        workspace: workspaceContext,
-        homeDir,
-        model: config?.defaults.model,
-        mode: "planning",
-        activeSkills,
-        signal: controller.signal,
-        onTextDelta: (chunk) => {
-          assistantText += chunk;
-          startTransition(() => {
-            setMessages((current) => {
-              const next = [...current];
-              const last = next[next.length - 1];
-              if (!last || last.role !== "assistant") {
-                next.push({ role: "assistant", text: chunk });
-              } else {
-                last.text += chunk;
-              }
-              return next;
-            });
-          });
-        },
-      });
-
-      // Update planning history
-      setPlanningState((prev) => ({
-        ...prev,
-        planningHistory: [
-          ...prev.planningHistory,
-          { role: "user" as const, content: message },
-          { role: "assistant" as const, content: assistantText || result.text },
-        ],
-      }));
-
-      // Check if charter was detected
-      if (result.detectedCharter) {
-        const charter = parseCharterYaml(result.detectedCharter);
-        setPlanningState((prev) => ({
-          ...prev,
-          status: "charter-review",
-          charter,
-        }));
-
-        if (workspacePath) {
-          await appendSessionEvent(workspacePath, sessionId, {
-            type: "charter.generated",
-            timestamp: new Date().toISOString(),
-            payload: { charterId: charter.id, researchQuestion: charter.researchQuestion },
-          });
-        }
-      }
-
-      startTransition(() => {
-        setActiveSkills(result.activeSkills);
-      });
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        startTransition(() => {
-          setMessages((current) => [
-            ...current,
-            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
-          ]);
-        });
-      }
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
-      setComposerFocused(true);
-      if (controller.signal.aborted) {
-        setPlanningState((prev) => ({ ...prev, status: "idle" }));
-        addSystemMessage("Planning interrupted.");
-      }
-    }
-  }
+  // ── Charter management ────────────────────────────────────────────────
 
   async function approveCharter() {
     if (!planningState.charter || !workspacePath) return;
@@ -1303,7 +448,424 @@ export function App({
     addSystemMessage("Charter cancelled. Planning reset.");
   }
 
-  // ── Status bar text ─────────────────────────────────────────────────────
+  // ── Keyboard input ────────────────────────────────────────────────────
+
+  useInput((key, inputKey) => {
+    if (inputKey.ctrl && key === "c") {
+      if (busy) {
+        clearCtrlCPending();
+        if (abortRef.current) {
+          abortRef.current.abort();
+          addSystemMessage("Interrupting agent...");
+        }
+        return;
+      }
+      if (screen !== "main") {
+        clearCtrlCPending();
+        returnToMainScreen();
+        return;
+      }
+      if (planningState.status === "charter-review") {
+        clearCtrlCPending();
+        rejectCharter();
+        return;
+      }
+      if (ctrlCPending) {
+        clearCtrlCPending();
+        app.exit();
+        return;
+      }
+      armCtrlCExitWindow();
+      return;
+    }
+
+    if (ctrlCPending) {
+      clearCtrlCPending();
+    }
+
+    if (inputKey.ctrl && key === "o") {
+      setToolActivityExpanded((prev) => !prev);
+      return;
+    }
+    if (inputKey.ctrl && key === "t") {
+      setTaskPanelVisible((prev) => !prev);
+      return;
+    }
+    if (inputKey.shift && inputKey.tab) {
+      setAgentMode((prev) => {
+        const modes: AgentMode[] = ["manual-review", "auto-approve", "auto-research"];
+        const idx = (modes.indexOf(prev) + 1) % modes.length;
+        const next = modes[idx]!;
+        addSystemMessage(`Mode: ${next} (shift+tab to cycle)`);
+        return next;
+      });
+      return;
+    }
+    if (inputKey.escape) {
+      if (busy && abortRef.current) {
+        abortRef.current.abort();
+        addSystemMessage("Interrupting agent...");
+      } else if (planningState.status === "charter-review") {
+        rejectCharter();
+      } else {
+        setComposerFocused(false);
+      }
+      return;
+    }
+    if (!composerFocused) {
+      if (planningState.status === "charter-review") {
+        if (key === "a") { void approveCharter(); return; }
+        if (key === "p") {
+          setPlanningState((prev) => ({ ...prev, status: "planning" }));
+          setComposerFocused(true);
+          addSystemMessage("Continue planning — type your feedback to refine the charter.");
+          return;
+        }
+      }
+      if (key === "a" && pendingUpdates.length > 0) { void acceptNextPendingUpdate(); return; }
+      if (key === "r" && pendingUpdates.length > 0) { rejectNextPendingUpdate(); return; }
+      if (key === "i" || (key.length === 1 && !inputKey.ctrl && !inputKey.meta && !inputKey.tab)) {
+        setComposerFocused(true);
+        if (key !== "i") setInput((c) => c + key);
+        return;
+      }
+    }
+  });
+
+  // ── Submit handler ──────────────────────────────────────────────────────
+
+  async function handleSubmit(value: string) {
+    if (handleDropdownSelect()) return;
+
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    if (agentQuestion) {
+      const options = agentQuestion.question.options;
+      const numChoice = parseInt(trimmed, 10);
+      if (!isNaN(numChoice) && numChoice >= 1 && numChoice <= options.length) {
+        const picked = options[numChoice - 1];
+        addSystemMessage(`> ${picked.label}`);
+        agentQuestion.resolve({ questionId: agentQuestion.question.id, answer: picked.label, isCustom: false });
+      } else {
+        addSystemMessage(`> ${trimmed}`);
+        agentQuestion.resolve({ questionId: agentQuestion.question.id, answer: trimmed, isCustom: true });
+      }
+      clearPendingQuestion();
+      setAgentQuestion(null);
+      setInput("");
+      return;
+    }
+
+    if (busy) return;
+
+    if (trimmed.startsWith("/") && !trimmed.includes(" ") && applyAutocomplete()) {
+      return;
+    }
+
+    setInput("");
+
+    const match = matchSlashCommand(trimmed);
+    if (match) {
+      addSystemMessage(`> ${trimmed}`);
+      await executeSlashCommand(match.cmd, match.args, slashCtx);
+      return;
+    }
+
+    if (trimmed.startsWith("/")) {
+      const skillName = trimmed.slice(1);
+      const matchedSkill = skills.find((s) => s.name === skillName);
+      if (matchedSkill) {
+        addSystemMessage(`> Activating skill: ${matchedSkill.name}`);
+        void sendToAgent(`/skill ${matchedSkill.name}`);
+        return;
+      }
+    }
+
+    if (!hasAuth) {
+      addSystemMessage("Not connected. Run /auth, set OPENAI_API_KEY, or use /config apikey <key>.");
+      return;
+    }
+    if (!hasWorkspace) {
+      addSystemMessage("No workspace. Run /init to initialize one in the current directory.");
+      return;
+    }
+
+    if (agentMode === "auto-research") {
+      if (planningState.status === "charter-review") {
+        addSystemMessage(`> ${trimmed}`);
+        setPlanningState((prev) => ({ ...prev, status: "planning" }));
+        void sendToPlanningAgent(trimmed);
+        return;
+      }
+      void sendToPlanningAgent(trimmed);
+      return;
+    }
+
+    void sendToAgent(trimmed);
+  }
+
+  // ── Agent execution ────────────────────────────────────────────────────
+
+  async function sendToAgent(message: string) {
+    if (!workspacePath) return;
+    turnToolLogRef.current = [];
+    setTurnToolCount(0);
+    setSubAgentProgress(null);
+    const controller = new AbortController();
+    let streamBuffer: ReturnType<typeof createSentenceStreamBuffer> | null = null;
+    abortRef.current = controller;
+    setBusy(true);
+    startTransition(() => {
+      setMessages((current) => [...current, { role: "user", text: message }]);
+    });
+
+    try {
+      const provider = await createProviderFromStoredAuth({ homeDir });
+      const workspace = await scanWorkspace(workspacePath);
+      const workspaceContext = {
+        workspaceDir: workspacePath!,
+        runId: sessionId,
+        workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
+        availableKeys: workspace.files.map((f) => f.key),
+        fileLabels: Object.fromEntries(workspace.files.map((f) => [f.key, f.label])),
+      };
+
+      let assistantText = "";
+      streamBuffer = createSentenceStreamBuffer({
+        onFlush: (text) => { addAssistantMessage(text); },
+      });
+      const result = await runAgentTurn({
+        provider,
+        message,
+        history,
+        workspace: workspaceContext,
+        homeDir,
+        model: config?.defaults.model,
+        reasoningEffort: config?.defaults.reasoningEffort,
+        activeSkills,
+        signal: controller.signal,
+        sessionUsage: sessionTokens,
+        onTextDelta: (chunk) => {
+          assistantText += chunk;
+          streamBuffer?.push(chunk);
+        },
+        onToolActivity: (activity) => {
+          streamBuffer?.flush();
+          if (activity.type === "tool_start") {
+            setCurrentToolActivity(activity.description ?? activity.name);
+          } else {
+            setCurrentToolActivity("");
+            turnToolLogRef.current.push({
+              name: activity.name,
+              description: activity.description ?? activity.name,
+              durationMs: activity.durationMs,
+            });
+            setTurnToolCount(turnToolLogRef.current.length);
+            // Refresh task panel when task tools complete
+            if (activity.name === "create_tasks" || activity.name === "update_task") {
+              setTaskVersion((v) => v + 1);
+            }
+          }
+        },
+        onSubAgentProgress: (progress) => {
+          if (progress.status === "done") {
+            setSubAgentProgress(null);
+          } else {
+            setSubAgentProgress({ ...progress });
+          }
+        },
+        onMemoryExtracted: (mems) => {
+          streamBuffer?.flush();
+          for (const m of mems) {
+            addSystemMessage(`  ◊ remembered: ${m}`);
+          }
+        },
+        onCompaction: () => {
+          streamBuffer?.flush();
+          addSystemMessage("  \u25CA Context compacted \u2014 older messages summarized");
+        },
+        onTokenUpdate: (u) => {
+          setSessionTokens({ ...u });
+          const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+          setTokenDisplay(`${k(u.estimatedCurrentTokens)} ctx \u00B7 ${k(u.totalTokens)} total`);
+        },
+      });
+      streamBuffer.flush();
+
+      if (turnToolLogRef.current.length > 0) {
+        const summary = buildToolSummary(turnToolLogRef.current);
+        addSystemMessage(`__tool_summary__${JSON.stringify({ summary, tools: turnToolLogRef.current })}`);
+        turnToolLogRef.current = [];
+      }
+
+      startTransition(() => {
+        setActiveSkills(result.activeSkills);
+        setHistory((current) => [
+          ...current,
+          { role: "user", content: message },
+          { role: "assistant", content: assistantText || result.text },
+        ]);
+      });
+
+      const reviewRequired: ProposedUpdate[] = [];
+      for (const update of result.proposedUpdates) {
+        if (agentMode === "auto-approve" || agentMode === "auto-research") {
+          await applyProposedUpdate(workspacePath, update);
+        } else {
+          const policy = classifyUpdateRisk(update);
+          if (policy.policy === "auto-apply") {
+            await applyProposedUpdate(workspacePath, update);
+          } else {
+            reviewRequired.push(update);
+          }
+        }
+      }
+
+      if (reviewRequired.length > 0) {
+        startTransition(() => setPendingUpdates((c) => [...c, ...reviewRequired]));
+      }
+
+      await appendSessionEvent(workspacePath, sessionId, {
+        type: "chat.turn",
+        timestamp: new Date().toISOString(),
+        payload: {
+          prompt: message,
+          response: assistantText || result.text,
+          proposedUpdates: result.proposedUpdates.map((u) => ({ key: u.key, summary: u.summary })),
+        },
+      });
+
+      const refreshed = await scanWorkspace(workspacePath);
+      startTransition(() => {
+        setWorkspaceFiles(refreshed.files);
+        setStatusLine(
+          reviewRequired.length > 0
+            ? `${reviewRequired.length} update(s) moved to review`
+            : "Turn complete"
+        );
+      });
+    } catch (error) {
+      streamBuffer?.flush();
+      if (!controller.signal.aborted) {
+        startTransition(() => {
+          setMessages((current) => [
+            ...current,
+            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
+          ]);
+        });
+      }
+    } finally {
+      streamBuffer?.dispose();
+      abortRef.current = null;
+      setBusy(false);
+      setComposerFocused(true);
+      if (controller.signal.aborted) {
+        addSystemMessage("Agent interrupted.");
+      }
+    }
+  }
+
+  // ── Planning agent (auto-research mode) ─────────────────────────────────
+
+  async function sendToPlanningAgent(message: string) {
+    if (!workspacePath) return;
+    const controller = new AbortController();
+    let streamBuffer: ReturnType<typeof createSentenceStreamBuffer> | null = null;
+    abortRef.current = controller;
+    setBusy(true);
+
+    setPlanningState((prev) => {
+      if (prev.status === "idle") {
+        addSystemMessage("Starting auto-research planning...");
+        return { ...prev, status: "planning" };
+      }
+      return prev;
+    });
+
+    startTransition(() => {
+      setMessages((current) => [...current, { role: "user", text: message }]);
+    });
+
+    try {
+      const provider = await createProviderFromStoredAuth({ homeDir });
+      const workspace = await scanWorkspace(workspacePath);
+      const workspaceContext = {
+        workspaceDir: workspacePath!,
+        runId: sessionId,
+        workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
+        availableKeys: workspace.files.map((f) => f.key),
+        fileLabels: Object.fromEntries(workspace.files.map((f) => [f.key, f.label])),
+      };
+
+      let assistantText = "";
+      streamBuffer = createSentenceStreamBuffer({
+        onFlush: (text) => { addAssistantMessage(text); },
+      });
+      const result = await runAgentTurn({
+        provider,
+        message,
+        history: planningState.planningHistory,
+        workspace: workspaceContext,
+        homeDir,
+        model: config?.defaults.model,
+        reasoningEffort: config?.defaults.reasoningEffort,
+        mode: "planning",
+        activeSkills,
+        signal: controller.signal,
+        onTextDelta: (chunk) => {
+          assistantText += chunk;
+          streamBuffer?.push(chunk);
+        },
+      });
+      streamBuffer.flush();
+
+      setPlanningState((prev) => ({
+        ...prev,
+        planningHistory: [
+          ...prev.planningHistory,
+          { role: "user" as const, content: message },
+          { role: "assistant" as const, content: assistantText || result.text },
+        ],
+      }));
+
+      if (result.detectedCharter) {
+        const charter = parseCharterYaml(result.detectedCharter);
+        setPlanningState((prev) => ({ ...prev, status: "charter-review", charter }));
+
+        if (workspacePath) {
+          await appendSessionEvent(workspacePath, sessionId, {
+            type: "charter.generated",
+            timestamp: new Date().toISOString(),
+            payload: { charterId: charter.id, researchQuestion: charter.researchQuestion },
+          });
+        }
+      }
+
+      startTransition(() => { setActiveSkills(result.activeSkills); });
+    } catch (error) {
+      streamBuffer?.flush();
+      if (!controller.signal.aborted) {
+        startTransition(() => {
+          setMessages((current) => [
+            ...current,
+            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
+          ]);
+        });
+      }
+    } finally {
+      streamBuffer?.dispose();
+      abortRef.current = null;
+      setBusy(false);
+      setComposerFocused(true);
+      if (controller.signal.aborted) {
+        setPlanningState((prev) => ({ ...prev, status: "idle" }));
+        addSystemMessage("Planning interrupted.");
+      }
+    }
+  }
+
+  // ── Status bar ─────────────────────────────────────────────────────────
 
   const statusParts: string[] = [];
   if (ctrlCPending) statusParts.push("Press Ctrl+C again to exit.");
@@ -1315,50 +877,28 @@ export function App({
   statusParts.push(agentMode);
   if (deferredPendingUpdates.length > 0) statusParts.push(`${deferredPendingUpdates.length} pending`);
 
+  const themeColors = getThemeColors(theme);
   const statusColor = busy
-    ? "yellow"
+    ? themeColors.warning
     : ctrlCPending
-      ? "yellow"
+      ? themeColors.warning
       : !hasAuth
-        ? "red"
+        ? themeColors.error
         : deferredPendingUpdates.length > 0
-          ? "magenta"
-          : "green";
+          ? themeColors.pending
+          : themeColors.secondary;
 
-  // ── Config screen ─────────────────────────────────────────────────────────
+  // ── Config screen ─────────────────────────────────────────────────────
 
   const configItems: ConfigItem[] = useMemo(() => [
-    {
-      key: "defaults.model",
-      label: "Model",
-      values: [...AVAILABLE_MODELS],
-      current: config?.defaults.model ?? "gpt-5.4",
-    },
-    {
-      key: "theme",
-      label: "Theme",
-      values: [...themeValues],
-      current: theme,
-    },
-    {
-      key: "defaults.reasoningEffort",
-      label: "Reasoning effort",
-      values: ["low", "medium", "high"],
-      current: config?.defaults.reasoningEffort ?? "medium",
-    },
-    {
-      key: "agentMode",
-      label: "Agent mode",
-      values: ["manual-review", "auto-approve", "auto-research"],
-      current: agentMode,
-    },
+    { key: "defaults.model", label: "Model", values: [...getAvailableModels()], current: config?.defaults.model ?? "gpt-5.4" },
+    { key: "theme", label: "Theme", values: [...themeValues], current: theme },
+    { key: "defaults.reasoningEffort", label: "Reasoning effort", values: ["low", "medium", "high", "xhigh"], current: config?.defaults.reasoningEffort ?? "medium" },
+    { key: "agentMode", label: "Agent mode", values: ["manual-review", "auto-approve", "auto-research"], current: agentMode },
   ], [config, theme, agentMode]);
 
   async function handleConfigUpdate(key: string, value: string) {
-    if (key === "agentMode") {
-      setAgentMode(value as AgentMode);
-      return;
-    }
+    if (key === "agentMode") { setAgentMode(value as AgentMode); return; }
     if (!config) return;
     let updated: OpenResearchConfig;
     if (key === "theme") {
@@ -1368,13 +908,7 @@ export function App({
     } else if (key === "defaults.model") {
       updated = { ...config, defaults: { ...config.defaults, model: value } };
     } else if (key === "defaults.reasoningEffort") {
-      updated = {
-        ...config,
-        defaults: {
-          ...config.defaults,
-          reasoningEffort: value as "low" | "medium" | "high",
-        },
-      };
+      updated = { ...config, defaults: { ...config.defaults, reasoningEffort: value as "low" | "medium" | "high" | "xhigh" } };
     } else {
       return;
     }
@@ -1382,200 +916,180 @@ export function App({
     await saveOpenResearchConfig(updated, { homeDir });
   }
 
-  function handleConfigClose() {
-    returnToMainScreen();
-  }
-
   // ── Render ────────────────────────────────────────────────────────────────
 
-  if (screen === "resume") {
-    return (
-      <SessionPicker
-        sessions={resumeSessions}
-        onSelect={async (session) => {
-          try {
-            const restored = await loadSessionHistory(workspacePath!, session.id);
-            startTransition(() => {
-              setMessages(restored.messages);
-              setHistory(restored.llmHistory);
-            });
-            addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);
-          } catch (err) {
-            addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          returnToMainScreen();
-        }}
-        onCancel={() => {
-          returnToMainScreen();
-        }}
-      />
-    );
-  }
-
-  if (screen === "config") {
-    return (
-      <ConfigScreen
-        items={configItems}
-        onUpdate={(key, value) => void handleConfigUpdate(key, value)}
-        onClose={handleConfigClose}
-      />
-    );
-  }
-
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
-      {/* Home screen */}
-      {isHome && (
-        <HomeScreenComponent
-          hasAuth={hasAuth}
-          hasWorkspace={hasWorkspace}
-          fileCount={workspaceFiles.length}
-          skillCount={skills.length}
-        />
-      )}
-
-      {/* Conversation messages */}
-      {deferredMessages.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          {deferredMessages.slice(-30).map((msg, idx) => {
-            if (msg.role === "system") {
-              return <SystemMessageComponent key={`msg-${idx}`} text={msg.text} />;
+    <ThemeProvider theme={theme}>
+      {screen === "resume" ? (
+        <SessionPicker
+          sessions={resumeSessions}
+          onSelect={async (session) => {
+            try {
+              const restored = await loadSessionHistory(workspacePath!, session.id);
+              startTransition(() => {
+                setMessageRenderVersion((current) => current + 1);
+                setMessages(restored.messages);
+                setHistory(restored.llmHistory);
+              });
+              addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);
+            } catch (err) {
+              addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
             }
-            if (msg.role === "user") {
-              return <UserMessage key={`msg-${idx}`} text={msg.text} />;
-            }
-            return <AgentMessage key={`msg-${idx}`} text={msg.text} />;
-          })}
-        </Box>
-      )}
-
-      {/* Pending updates */}
-      {deferredPendingUpdates.length > 0 && (
-        <PendingUpdateCard
-          count={deferredPendingUpdates.length}
-          summary={truncate(deferredPendingUpdates[0].summary, 80)}
+            returnToMainScreen();
+          }}
+          onCancel={() => { returnToMainScreen(); }}
         />
-      )}
+      ) : screen === "config" ? (
+        <ConfigScreen
+          items={configItems}
+          onUpdate={(key, value) => void handleConfigUpdate(key, value)}
+          onClose={() => returnToMainScreen()}
+        />
+      ) : (
+        <Box flexDirection="column" paddingX={1} paddingY={1} width={terminalWidth}>
+          {isHome && (
+            <HomeScreenComponent
+              hasAuth={hasAuth}
+              hasWorkspace={hasWorkspace}
+              fileCount={workspaceFiles.length}
+              skillCount={skills.length}
+              width={contentWidth}
+            />
+          )}
 
-      {/* Charter review panel */}
-      {planningState.status === "charter-review" && planningState.charter && (
-        <Box
-          borderStyle="round"
-          borderColor="yellow"
-          paddingX={1}
-          marginBottom={1}
-          flexDirection="column"
-        >
-          <Text bold color="yellow">Research Charter — Review</Text>
-          <Box marginTop={1} flexDirection="column">
-            <Text bold color="white">Question: </Text>
-            <Text>{planningState.charter.researchQuestion}</Text>
+          {deferredMessages.length > 0 && (
+            <Box flexDirection="column" marginBottom={1} width={contentWidth}>
+              <Static key={`conversation-static-${messageRenderVersion}-${toolActivityExpanded ? "e" : "c"}`} items={staticMessages}>
+                {(message, idx) => renderConversationMessage(message, `static-msg-${idx}`, toolActivityExpanded, contentWidth)}
+              </Static>
+              {dynamicMessages.map((message, idx) =>
+                renderConversationMessage(message, `dynamic-msg-${staticMessages.length + idx}`, toolActivityExpanded, contentWidth),
+              )}
+            </Box>
+          )}
+
+          {subAgentProgress && (
+            <SubAgentIndicator
+              agentType={subAgentProgress.agentType}
+              goal={subAgentProgress.goal}
+              currentTool={subAgentProgress.currentTool}
+              toolCount={subAgentProgress.toolCount}
+              frame={activityFrame}
+              width={contentWidth}
+            />
+          )}
+
+          {taskPanelVisible && getVisibleTasks().length > 0 && (
+            <TaskPanel
+              tasks={getVisibleTasks()}
+              frame={activityFrame}
+              width={contentWidth}
+            />
+          )}
+
+          {deferredPendingUpdates.length > 0 && (
+            <PendingUpdateCard
+              count={deferredPendingUpdates.length}
+              summary={truncate(deferredPendingUpdates[0].summary, Math.max(24, insetWidth(contentWidth, 8)))}
+              width={contentWidth}
+            />
+          )}
+
+          {planningState.status === "charter-review" && planningState.charter && (
+            <Box borderStyle="round" borderColor={themeColors.warning} paddingX={1} marginBottom={1} flexDirection="column" width={contentWidth}>
+              <Text bold color={themeColors.warning}>Research Charter — Review</Text>
+              <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
+                <Text bold color={themeColors.text}>Question: </Text>
+                <Box width={panelInnerWidth}>
+                  <Text color={themeColors.text} wrap="wrap">{planningState.charter.researchQuestion}</Text>
+                </Box>
+              </Box>
+              {planningState.charter.successCriteria.length > 0 && (
+                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
+                  <Text bold color={themeColors.text}>Success Criteria:</Text>
+                  {planningState.charter.successCriteria.map((c, i) => (
+                    <Box key={`sc-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  - {c}</Text></Box>
+                  ))}
+                </Box>
+              )}
+              {planningState.charter.scopeBoundaries.length > 0 && (
+                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
+                  <Text bold color={themeColors.text}>Scope Boundaries:</Text>
+                  {planningState.charter.scopeBoundaries.map((b, i) => (
+                    <Box key={`sb-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  - {b}</Text></Box>
+                  ))}
+                </Box>
+              )}
+              {planningState.charter.proposedSteps.length > 0 && (
+                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
+                  <Text bold color={themeColors.text}>Proposed Steps:</Text>
+                  {planningState.charter.proposedSteps.map((s, i) => (
+                    <Box key={`ps-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  {i + 1}. {s}</Text></Box>
+                  ))}
+                </Box>
+              )}
+              <Box marginTop={1} width={panelInnerWidth}>
+                <Text color={themeColors.muted} dimColor wrap="wrap">
+                  Press <Text bold color={themeColors.secondary}>a</Text> to approve · <Text bold color={themeColors.accent}>p</Text> to keep planning · <Text bold color={themeColors.error}>Esc</Text> to cancel
+                </Text>
+              </Box>
+            </Box>
+          )}
+
+          {dropdownVisible && (
+            <SuggestionDropdown width={contentWidth} items={suggestions as SuggestionItem[]} selectedIndex={selectedSuggestion} />
+          )}
+
+          {agentQuestion && (
+            <QuestionCard width={contentWidth} question={agentQuestion.question.question} options={agentQuestion.question.options} />
+          )}
+
+          <Box borderStyle="round" borderColor={agentQuestion ? themeColors.warning : composerFocused ? themeColors.borderFocused : themeColors.borderDefault} paddingX={1} flexDirection="column" width={contentWidth}>
+            <Box>
+              <PromptPrefix busy={busy} frame={activityFrame} hasQuestion={!!agentQuestion} mode={agentMode} />
+              <TextInput
+                value={input}
+                onChange={setInput}
+                focus={composerFocused}
+                onSubmit={(v) => void handleSubmit(v)}
+                onTab={() => applyAutocomplete()}
+                onUpArrow={handleDropdownUp}
+                onDownArrow={handleDropdownDown}
+                cursorToEnd={cursorToEnd}
+                accentColor={themeColors.accent}
+                mutedColor={themeColors.muted}
+                placeholder={
+                  agentQuestion ? "Type your answer..."
+                    : !hasAuth ? "Type /auth or /config apikey"
+                    : !hasWorkspace ? "Type /init to create workspace"
+                    : busy ? "Draft your next message while the agent works"
+                    : "Ask a question or type / for commands"
+                }
+              />
+            </Box>
           </Box>
-          {planningState.charter.successCriteria.length > 0 && (
-            <Box marginTop={1} flexDirection="column">
-              <Text bold color="white">Success Criteria:</Text>
-              {planningState.charter.successCriteria.map((c, i) => (
-                <Text key={`sc-${i}`} color="gray">  - {c}</Text>
-              ))}
-            </Box>
-          )}
-          {planningState.charter.scopeBoundaries.length > 0 && (
-            <Box marginTop={1} flexDirection="column">
-              <Text bold color="white">Scope Boundaries:</Text>
-              {planningState.charter.scopeBoundaries.map((b, i) => (
-                <Text key={`sb-${i}`} color="gray">  - {b}</Text>
-              ))}
-            </Box>
-          )}
-          {planningState.charter.proposedSteps.length > 0 && (
-            <Box marginTop={1} flexDirection="column">
-              <Text bold color="white">Proposed Steps:</Text>
-              {planningState.charter.proposedSteps.map((s, i) => (
-                <Text key={`ps-${i}`} color="gray">  {i + 1}. {s}</Text>
-              ))}
-            </Box>
-          )}
-          <Box marginTop={1}>
-            <Text color="gray" dimColor>
-              Press <Text bold color="green">a</Text> to approve · <Text bold color="cyan">p</Text> to keep planning · <Text bold color="red">Esc</Text> to cancel
+
+          <Box marginTop={0}>
+            <Text color={agentMode === "auto-research" ? themeColors.warning : themeColors.muted} dimColor={agentMode === "manual-review"}>
+              {"‖ "}{agentMode}{planningState.status !== "idle" ? ` (${planningState.status})` : ""}{" (shift+tab to cycle)"}
             </Text>
           </Box>
-        </Box>
-      )}
 
-      {/* Autocomplete dropdown */}
-      {dropdownVisible && (
-        <SuggestionDropdown
-          items={suggestions as SuggestionItem[]}
-          selectedIndex={selectedSuggestion}
-        />
-      )}
-
-      {/* Agent question */}
-      {agentQuestion && (
-        <QuestionCard
-          question={agentQuestion.question.question}
-          options={agentQuestion.question.options}
-        />
-      )}
-
-      {/* Prompt */}
-      <Box
-        borderStyle="round"
-        borderColor={agentQuestion ? "yellow" : busy ? "yellow" : composerFocused ? "cyan" : "gray"}
-        paddingX={1}
-        flexDirection="column"
-      >
-        <Box>
-          <PromptPrefix
+          <FooterBar
+            width={contentWidth}
             busy={busy}
             frame={activityFrame}
-            hasQuestion={!!agentQuestion}
+            toolActivity={currentToolActivity}
+            toolCount={turnToolCount}
+            statusParts={statusParts}
+            statusColor={statusColor}
+            tokenDisplay={tokenDisplay}
+            workspaceName={hasWorkspace ? path.basename(workspacePath!) : process.cwd()}
             mode={agentMode}
-          />
-          <TextInput
-            value={input}
-            onChange={setInput}
-            focus={composerFocused}
-            onSubmit={(v) => void handleSubmit(v)}
-            onTab={() => applyAutocomplete()}
-            onUpArrow={handleDropdownUp}
-            onDownArrow={handleDropdownDown}
-            cursorToEnd={cursorToEnd}
-            placeholder={
-              agentQuestion
-                ? "Type your answer..."
-                : busy
-                  ? "Agent is working..."
-                  : !hasAuth
-                    ? "Type /auth to connect"
-                    : !hasWorkspace
-                      ? "Type /init to create workspace"
-                      : "Ask a question or type / for commands"
-            }
+            planningStatus={planningState.status}
           />
         </Box>
-      </Box>
-
-      {/* Mode indicator */}
-      <Box marginTop={0}>
-        <Text color={agentMode === "auto-research" ? "yellow" : "gray"} dimColor={agentMode === "manual-review"}>
-          {"‖ "}{agentMode}{planningState.status !== "idle" ? ` (${planningState.status})` : ""}{" (shift+tab to cycle)"}
-        </Text>
-      </Box>
-
-      {/* Footer */}
-      <FooterBar
-        busy={busy}
-        frame={activityFrame}
-        toolActivity={currentToolActivity}
-        statusParts={statusParts}
-        statusColor={statusColor}
-        tokenDisplay={tokenDisplay}
-        workspaceName={hasWorkspace ? path.basename(workspacePath!) : process.cwd()}
-        mode={agentMode}
-        planningStatus={planningState.status}
-      />
-    </Box>
+      )}
+    </ThemeProvider>
   );
 }

@@ -1,9 +1,11 @@
 import type { LLMMessage } from "@/lib/llm/types";
 import type { LLMProvider } from "@/lib/llm/provider";
-import { TOOL_SCHEMAS, getToolsForMode } from "./tool-schemas";
+import type { ToolExecutionResult } from "./tools";
+import { TOOL_SCHEMAS, getToolsForMode, isParallelSafe } from "./tool-schemas";
 import type { ProposedUpdate, WorkspaceContext } from "./state";
 import { buildPlanningSystemPrompt } from "./prompts/planning";
 import { executeTool } from "./tool-dispatcher";
+import type { SubAgentProgress } from "./subagent";
 import { loadRuntimeSkillByName, type RuntimeSkill } from "@/lib/skills/runtime";
 import {
   createSessionUsage,
@@ -16,11 +18,14 @@ import {
 import { loadAllMemories, selectRelevantMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
 import { extractAndStoreMemories } from "@/lib/memory/extractor";
 import { readAgentsMd, maybeUpdateAgentsMd } from "@/lib/workspace/agents-md";
+import { getTaskContextBlock } from "@/lib/agent/tools/tasks";
+import { selectModelForTask } from "@/lib/llm/provider-catalog";
 
 // ── Tool Activity Event ─────────────────────────────────────────────────────
 
 export interface ToolActivity {
   type: "tool_start" | "tool_end";
+  toolCallId: string;
   name: string;
   description?: string;
   durationMs?: number;
@@ -35,6 +40,15 @@ export interface AgentTurnResult {
   searchResults: Array<{ title: string; url: string; provider: string }>;
   detectedCharter?: string;
   tokenUsage: SessionTokenUsage;
+}
+
+type PendingToolCall = { id: string; name: string; arguments: string };
+
+interface ExecutedToolCall {
+  toolCall: PendingToolCall;
+  result: ToolExecutionResult;
+  description: string;
+  durationMs?: number;
 }
 
 // ── Tool Name → Human-Readable Description ──────────────────────────────────
@@ -67,11 +81,54 @@ const TOOL_DESCRIPTIONS: Record<string, (args: Record<string, unknown>) => strin
   load_skill: (a) => `Loading skill: ${a.skill_id ?? ""}`,
   read_skill_reference: (a) => `Reading skill reference: ${a.path ?? ""}`,
   create_paper: (a) => `Creating paper: ${a.title ?? ""}`,
+  launch_subagent: (a) => {
+    const type = a.type as string | undefined;
+    const goal = a.goal as string | undefined;
+    return `Sub-agent (${type ?? "explore"}): ${goal?.slice(0, 60) ?? "task"}`;
+  },
+  create_tasks: (a) => {
+    const tasks = a.tasks as Array<{ subject: string }> | undefined;
+    return `Creating ${tasks?.length ?? 0} task${(tasks?.length ?? 0) !== 1 ? "s" : ""}`;
+  },
+  update_task: (a) => {
+    const status = a.status as string | undefined;
+    return status ? `Task → ${status}` : "Updating task";
+  },
 };
 
 function describeToolCall(name: string, args: Record<string, unknown>): string {
   const fn = TOOL_DESCRIPTIONS[name];
   return fn ? fn(args) : `Running ${name}`;
+}
+
+function formatToolError(toolName: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Error executing ${toolName}: ${message}`;
+}
+
+function batchToolCalls(toolCalls: PendingToolCall[]): PendingToolCall[][] {
+  const batches: PendingToolCall[][] = [];
+  let currentParallelBatch: PendingToolCall[] = [];
+
+  for (const toolCall of toolCalls) {
+    if (isParallelSafe(toolCall.name)) {
+      currentParallelBatch.push(toolCall);
+      continue;
+    }
+
+    if (currentParallelBatch.length > 0) {
+      batches.push(currentParallelBatch);
+      currentParallelBatch = [];
+    }
+
+    batches.push([toolCall]);
+  }
+
+  if (currentParallelBatch.length > 0) {
+    batches.push(currentParallelBatch);
+  }
+
+  return batches;
 }
 
 // ── System Prompt ───────────────────────────────────────────────────────────
@@ -81,31 +138,50 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     .map((skill) => `## Active Skill: ${skill.name}\n${skill.prompt}`)
     .join("\n\n");
   return [
-    "You are Open Research, a local-first research agent running inside a terminal CLI.",
+    "You are Open Research — a senior research director operating through a terminal CLI. You think like a principal investigator: decisive, evidence-driven, and efficient with the user's time.",
     "",
-    "## Capabilities",
-    "You have full access to the local filesystem and shell. You can:",
-    "- Read any file on disk with read_file",
-    "- List directories with list_directory to explore the workspace and discover files",
-    "- Search file contents with search_workspace",
-    "- Run shell commands with run_command (python, R, node, LaTeX, curl, git, etc.)",
-    "- Write new workspace files or edit existing ones",
-    "- Search academic papers across OpenAlex, Semantic Scholar, and arXiv",
-    "- Fetch web pages and API responses with fetch_url",
-    "- Ask the user questions when you need clarification with ask_user",
-    "- Activate research skills for specialized workflows",
+    "## Communication Style",
+    "- Lead with conclusions, not process. State the finding first, then the evidence.",
+    "- Be concise. One clear paragraph beats five hedging ones. If it can be a sentence, don't make it a paragraph.",
+    "- No filler. Skip \"Great question!\", \"Let me think about this\", \"Here's what I found\". Just deliver the answer.",
+    "- Use structured output (bullets, tables, numbered lists) for complex information. Prose for synthesis and interpretation.",
+    "- When reporting on tool results, summarize — don't echo raw output. The user can read the files themselves.",
+    "- When presenting research findings, use this hierarchy: Conclusion → Key evidence → Caveats → Next steps.",
+    "- Cite precisely: author (year), title, and source. No vague \"studies show\" or \"research suggests\" without attribution.",
+    "- Match response length to question complexity. Simple questions get one-line answers. Deep analysis gets structured sections.",
     "",
-    "## Principles",
-    "- Start by exploring. Use list_directory and search_workspace to understand the workspace before acting.",
-    "- Read before writing. Understand existing files before making changes.",
-    "- Ground claims in sources. Cite papers and data, not assumptions.",
-    "- Run code to verify. When you write a script, run it and check the output.",
-    "- Be transparent. Show the user what you're doing and why.",
-    "- When unsure, ask. Use ask_user rather than guessing.",
-    "- For large outputs, redirect to a file and read selectively.",
-    "- Always wrap file paths in backticks: `notes/brief.md`, `experiments/analysis.py`. Include line references as `src/file.ts:42`. This makes them clickable.",
+    "## Tools",
+    "You have full filesystem and shell access:",
+    "- `read_file` / `list_directory` / `search_workspace` — explore and read",
+    "- `run_command` — execute python, R, node, LaTeX, curl, git, etc.",
+    "- `write_new_file` / `update_existing_file` — create and edit workspace files",
+    "- `search_external_sources` — search OpenAlex, Semantic Scholar, arXiv",
+    "- `fetch_url` — fetch web pages and API responses",
+    "- `ask_user` — ask clarifying questions when genuinely needed",
+    "- `load_skill` — activate specialized research workflows",
+    "- `launch_subagent` — delegate exploration to a lightweight sub-agent that runs on its own context window",
+    "- `create_tasks` / `update_task` — track multi-step research progress (3+ steps only). Tasks are injected into your context automatically.",
+    "- When multiple reads, searches, fetches, or sub-agent launches are independent, invoke all tools in a single response so they can execute concurrently.",
     "",
-    `## Workspace\nRoot: ${process.cwd()}\nUse list_directory to explore. Use search_workspace or read_file to read content.`,
+    "## Sub-Agents",
+    "Use `launch_subagent` instead of reading files yourself when exploring unfamiliar parts of the workspace or searching across many files.",
+    "The sub-agent has zero context from this conversation — it only sees what you write in `goal` and `context`.",
+    "**You must write detailed, self-contained instructions:**",
+    "- `goal`: Exactly what to find. Include specific function names, file paths, class names, or patterns you already know. State what form the answer should take.",
+    "- `context`: What you already know, what you've ruled out, why you need this information, and any constraints on where to look.",
+    "Bad: \"Find how auth works\"",
+    "Good: \"Find all files involved in the OpenAI OAuth flow. I know auth tokens are stored in ~/.open-research/auth.json. I need to understand: (1) where the OAuth URL is constructed, (2) how tokens are refreshed, (3) what headers are sent on API calls. Report file paths with line numbers.\"",
+    "Do NOT re-read files the sub-agent already summarized. Trust its findings and build on them.",
+    "",
+    "## Operating Principles",
+    "- Explore before acting. Read the workspace state before writing anything.",
+    "- Ground every claim. Cite papers and data — never speculate without flagging it.",
+    "- Run code to verify. Write a script, execute it, check the output. Don't assume correctness.",
+    "- Ask only when necessary. Use `ask_user` for genuine ambiguity, not for things you can figure out from context.",
+    "- Redirect large outputs to files. Read selectively — don't dump entire datasets into responses.",
+    "- Always wrap file paths in backticks: `notes/brief.md`, `experiments/analysis.py:42`.",
+    "",
+    `## Workspace\nRoot: ${process.cwd()}`,
     skillText,
   ]
     .filter(Boolean)
@@ -135,6 +211,7 @@ export async function runAgentTurn(input: {
   workspace: WorkspaceContext;
   homeDir?: string;
   model?: string;
+  reasoningEffort?: import("@/lib/llm/types").ReasoningEffort;
   mode?: "planning" | "full";
   activeSkills?: RuntimeSkill[];
   onTextDelta?: (chunk: string) => void;
@@ -145,6 +222,7 @@ export async function runAgentTurn(input: {
   sessionUsage?: SessionTokenUsage;
   onMemoryExtracted?: (memories: string[]) => void;
   onAgentsMdUpdated?: () => void;
+  onSubAgentProgress?: (progress: SubAgentProgress) => void;
   signal?: AbortSignal;
 }): Promise<AgentTurnResult> {
   const requestedSkills = await parseRequestedSkills(input.message, input.homeDir);
@@ -174,10 +252,14 @@ export async function runAgentTurn(input: {
     ? await readAgentsMd(input.workspace.workspaceDir).catch(() => "")
     : "";
 
+  // Load task context (if tasks exist)
+  const taskBlock = getTaskContextBlock();
+
   const fullSystemPrompt = [
     systemPrompt,
     memoryBlock || null,
     agentsMd ? `## Project Context (from AGENTS.md)\n${agentsMd}` : null,
+    taskBlock || null,
   ].filter(Boolean).join("\n\n");
 
   let messages: LLMMessage[] = [
@@ -211,7 +293,7 @@ export async function runAgentTurn(input: {
       messages,
       tools,
       model,
-      reasoningEffort: "medium",
+      reasoningEffort: input.reasoningEffort ?? "medium",
       signal,
     })) {
       if (signal?.aborted) break;
@@ -248,7 +330,7 @@ export async function runAgentTurn(input: {
         userMessage: input.message,
         agentResponse: fullText,
         provider: input.provider,
-        model: "gpt-5.4-mini",
+        model: selectModelForTask(input.provider.kind, input.model, "memory"),
         homeDir: input.homeDir,
         workspaceDir: input.workspace.workspaceDir,
       }).then((stored) => {
@@ -264,7 +346,7 @@ export async function runAgentTurn(input: {
           userMessage: input.message,
           agentResponse: fullText,
           provider: input.provider,
-          model: "gpt-5.4-mini",
+          model: selectModelForTask(input.provider.kind, input.model, "workspace"),
         }).then((updated) => {
           if (updated) input.onAgentsMdUpdated?.();
         }).catch(() => { /* best-effort */ });
@@ -291,55 +373,103 @@ export async function runAgentTurn(input: {
       })),
     });
 
-    for (const toolCall of toolCalls) {
-      if (signal?.aborted) break;
+    const executeSingleToolCall = async (toolCall: PendingToolCall): Promise<ExecutedToolCall> => {
+      let args: Record<string, unknown>;
 
-      const args = JSON.parse(toolCall.arguments || "{}");
+      try {
+        args = JSON.parse(toolCall.arguments || "{}");
+      } catch (error) {
+        return {
+          toolCall,
+          result: { result: formatToolError(toolCall.name, error) },
+          description: `Running ${toolCall.name}`,
+        };
+      }
+
       const description = describeToolCall(toolCall.name, args);
-
-      // Notify TUI: tool starting
       input.onToolActivity?.({
         type: "tool_start",
+        toolCallId: toolCall.id,
         name: toolCall.name,
         description,
       });
 
       const startTime = Date.now();
-      const result = await executeTool(
-        toolCall.name,
-        args,
-        input.workspace,
-        activeSkills,
-        input.homeDir,
-        signal
-      );
-      const durationMs = Date.now() - startTime;
-
-      // Notify TUI: tool finished
-      input.onToolActivity?.({
-        type: "tool_end",
-        name: toolCall.name,
-        description,
-        durationMs,
-      });
-
-      if (result.proposedUpdate) {
-        proposedUpdates.push(result.proposedUpdate);
-      }
-      if (result.searchResults) {
-        searchResults.push(
-          ...result.searchResults.map((item) => ({
-            title: item.title,
-            url: item.url,
-            provider: item.provider,
-          }))
+      try {
+        const result = await executeTool(
+          toolCall.name,
+          args,
+          input.workspace,
+          activeSkills,
+          input.homeDir,
+          signal,
+          input.provider,
+          input.onSubAgentProgress,
+          toolCall.id
         );
+        const durationMs = Date.now() - startTime;
+        input.onToolActivity?.({
+          type: "tool_end",
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          description,
+          durationMs,
+        });
+        return { toolCall, result, description, durationMs };
+      } catch (error) {
+        const durationMs = Date.now() - startTime;
+        input.onToolActivity?.({
+          type: "tool_end",
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          description,
+          durationMs,
+        });
+        return {
+          toolCall,
+          result: { result: formatToolError(toolCall.name, error) },
+          description,
+          durationMs,
+        };
       }
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: result.result,
+    };
+
+    for (const batch of batchToolCalls(toolCalls)) {
+      if (signal?.aborted) break;
+
+      const settled = await Promise.allSettled(batch.map((toolCall) => executeSingleToolCall(toolCall)));
+      const completed = settled.map((entry, index): ExecutedToolCall => {
+        if (entry.status === "fulfilled") {
+          return entry.value;
+        }
+
+        const toolCall = batch[index]!;
+        return {
+          toolCall,
+          result: { result: formatToolError(toolCall.name, entry.reason) },
+          description: `Running ${toolCall.name}`,
+        };
       });
+
+      for (const { toolCall, result } of completed) {
+        if (result.proposedUpdate) {
+          proposedUpdates.push(result.proposedUpdate);
+        }
+        if (result.searchResults) {
+          searchResults.push(
+            ...result.searchResults.map((item) => ({
+              title: item.title,
+              url: item.url,
+              provider: item.provider,
+            }))
+          );
+        }
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: result.result,
+        });
+      }
     }
   }
 

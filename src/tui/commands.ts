@@ -134,7 +134,7 @@ export function getUnifiedSuggestions(
     const sk: Suggestion[] = allSkills.map((s) => ({
       kind: "skill", name: s.name, description: s.description, source: s.source,
     }));
-    return [...cmds, ...sk].slice(0, 10);
+    return [...cmds, ...sk];
   }
 
   const cmdHits: Suggestion[] = SLASH_COMMANDS
@@ -151,7 +151,7 @@ export function getUnifiedSuggestions(
       kind: "skill", name: s.name, description: s.description, source: s.source,
     }));
 
-  return [...cmdHits, ...skillHits].slice(0, 8);
+  return [...cmdHits, ...skillHits];
 }
 
 /** Extract the @mention token being typed. */
@@ -174,7 +174,7 @@ export function getFileSuggestions(
       f.path.toLowerCase().includes(search) ||
       f.label.toLowerCase().includes(search)
   );
-  return matches.slice(0, 8).map((f) => ({
+  return matches.map((f) => ({
     kind: "file",
     path: f.path,
     label: f.label,

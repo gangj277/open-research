@@ -1,3 +1,4 @@
+import type { LLMProvider } from "@/lib/llm/provider";
 import type { WorkspaceContext, ProposedUpdate } from "./state";
 import type { RuntimeSkill } from "@/lib/skills/runtime";
 import type { ToolExecutionResult } from "./tools";
@@ -13,6 +14,8 @@ import { executeCreatePaper } from "./tools/create-paper";
 import { executeReadPdf } from "./tools/read-pdf";
 import { executeSearchExternalSources } from "./search-external-sources";
 import { loadRuntimeSkillByName, readSkillReferenceFile } from "@/lib/skills/runtime";
+import { runSubAgent, type SubAgentProgress } from "./subagent";
+import { executeCreateTasks, executeUpdateTask } from "./tools/tasks";
 
 export async function executeTool(
   name: string,
@@ -20,7 +23,10 @@ export async function executeTool(
   ctx: WorkspaceContext,
   activeSkills: RuntimeSkill[],
   homeDir?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  provider?: LLMProvider,
+  onSubAgentProgress?: (progress: SubAgentProgress) => void,
+  toolCallId?: string
 ): Promise<ToolExecutionResult> {
   switch (name) {
     // ── File & Workspace ────────────────────────────────────────────────
@@ -150,6 +156,38 @@ export async function executeTool(
       const out = executeCreatePaper(args as { title: string; content: string }, ctx);
       return { result: out.result, proposedUpdate: out.update };
     }
+
+    // ── Sub-Agent ──────────────────────────────────────────────────────
+    case "launch_subagent": {
+      if (!provider) {
+        return { result: "Error: sub-agent requires an LLM provider but none was available." };
+      }
+      const { type, goal, context } = args as { type: string; goal: string; context?: string };
+      const result = await runSubAgent({
+        agentId: toolCallId ?? crypto.randomUUID(),
+        provider,
+        type,
+        goal,
+        context,
+        workspace: ctx,
+        homeDir,
+        signal,
+        onProgress: onSubAgentProgress,
+      });
+      const meta = `[${result.toolCallCount} tool calls · ${(result.durationMs / 1000).toFixed(1)}s${result.hitLimit ? " · hit iteration limit" : ""}]`;
+      return { result: `${result.summary}\n\n${meta}` };
+    }
+
+    // ── Task Tracking ────────────────────────────────────────────────
+    case "create_tasks":
+      return {
+        result: executeCreateTasks(args as { tasks: Array<{ subject: string; activeForm?: string }> }),
+      };
+
+    case "update_task":
+      return {
+        result: executeUpdateTask(args as { taskId: string; status?: string; subject?: string; activeForm?: string }),
+      };
 
     default:
       return { result: `Unknown tool: "${name}"` };

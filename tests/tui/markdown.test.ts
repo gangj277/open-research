@@ -2,6 +2,12 @@ import { describe, expect, test } from "vitest";
 import { renderMarkdown } from "@/tui/markdown";
 import chalk from "chalk";
 
+const ANSI_PATTERN = /\u001B\[[0-9;]*m/g;
+
+function stripAnsi(value: string) {
+  return value.replace(ANSI_PATTERN, "");
+}
+
 describe("markdown renderer", () => {
   test("returns plain text unchanged when no markdown syntax", () => {
     expect(renderMarkdown("Hello world")).toBe("Hello world");
@@ -29,6 +35,15 @@ describe("markdown renderer", () => {
     expect(result).toContain("print('hello')");
     expect(result).toContain("│");
     expect(result).toContain("python");
+  });
+
+  test("sizes markdown chrome to the provided terminal width", () => {
+    const result = renderMarkdown("```typescript\nconst answer = 42;\n```", { terminalWidth: 20 });
+    const visibleLines = stripAnsi(result).split("\n");
+
+    expect(visibleLines[0]?.length).toBeLessThanOrEqual(20);
+    expect(visibleLines[1]?.length).toBeLessThanOrEqual(20);
+    expect(visibleLines[2]?.length).toBeLessThanOrEqual(20);
   });
 
   test("renders headings with color", () => {

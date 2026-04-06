@@ -7,7 +7,7 @@ import { initWorkspace, loadWorkspaceProject } from "@/lib/workspace/project";
 import { addFileSource, addUrlSource } from "@/lib/workspace/sources";
 import { importCodexAuth } from "@/lib/auth/import-codex";
 import { loginWithBrowser } from "@/lib/auth/login";
-import { clearStoredAuth, loadStoredAuth } from "@/lib/auth/store";
+import { clearStoredAuth } from "@/lib/auth/store";
 import { getAuthStatus } from "@/lib/auth/status";
 import {
   createSkillScaffold,
@@ -20,6 +20,7 @@ import { prompt } from "@/lib/cli/prompts";
 import { formatDateTime } from "@/lib/cli/format";
 import { getPackageVersion } from "@/lib/cli/version";
 import { ensureOpenResearchConfig } from "@/lib/config/store";
+import { hasConfiguredProvider } from "@/lib/llm/provider-resolution";
 import { App } from "@/tui/app";
 
 const program = new Command();
@@ -27,17 +28,17 @@ const program = new Command();
 program
   .name("open-research")
   .version(getPackageVersion())
-  .description("Local-first research CLI powered by ChatGPT/Codex auth.")
+  .description("Local-first research CLI powered by OpenAI account auth or API keys.")
   .argument("[workspacePath]", "Optional workspace path to open")
   .action(async (workspacePath?: string) => {
     await ensureOpenResearchConfig();
     const target = workspacePath ? path.resolve(workspacePath) : process.cwd();
     const project = await loadWorkspaceProject(target);
-    const auth = await loadStoredAuth();
+    const hasProvider = await hasConfiguredProvider();
     render(
       React.createElement(App, {
         initialState: {
-          authStatus: auth ? "connected" : "missing",
+          authStatus: hasProvider ? "connected" : "missing",
           workspacePath: project ? target : null,
           screen: "home",
           pendingUpdates: [],
@@ -81,7 +82,7 @@ auth
 
 auth
   .command("status")
-  .description("Show stored auth health and capabilities.")
+  .description("Show active OpenAI credential status and capabilities.")
   .action(async () => {
     await ensureOpenResearchConfig();
     const status = await getAuthStatus();
@@ -92,6 +93,9 @@ auth
     }
     console.log(`Connection: ${status.connected ? "connected" : "degraded"}`);
     console.log(`Message: ${status.message}`);
+    if ("source" in status && status.source) {
+      console.log(`Source: ${status.source}`);
+    }
     if ("stored" in status) {
       console.log(`Account: ${status.stored.tokens.accountId}`);
       console.log(`Expires: ${formatDateTime(new Date(status.stored.tokens.expires).toISOString())}`);

@@ -2,10 +2,10 @@ import type { CallLLMOptions, LLMResponse, StreamingLLMOptions, StreamChunk } fr
 
 /**
  * An LLM provider encapsulates how to make completion calls.
- * The app now supports a single provider implementation: OpenAI auth.
+ * Multiple credential paths can resolve to a provider implementation.
  */
 export interface LLMProvider {
-  readonly kind: "openai_auth";
+  readonly kind: "openai_auth" | "openai_api_key";
   callLLM(options: CallLLMOptions): Promise<LLMResponse>;
   callLLMStreaming(options: StreamingLLMOptions): AsyncGenerator<StreamChunk>;
 }

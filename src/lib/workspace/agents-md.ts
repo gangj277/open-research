@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { LLMProvider } from "@/lib/llm/provider";
+import { selectModelForTask } from "@/lib/llm/provider-catalog";
 
 const AGENTS_MD_FILENAME = "AGENTS.md";
 
@@ -80,7 +81,7 @@ export async function maybeUpdateAgentsMd(input: {
         { role: "system", content: UPDATE_SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      model: input.model ?? "gpt-5.4-mini",
+      model: input.model ?? selectModelForTask(input.provider.kind, undefined, "workspace"),
       maxTokens: 2048,
       temperature: 0,
     });

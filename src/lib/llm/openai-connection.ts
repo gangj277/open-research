@@ -3,6 +3,7 @@ import {
   type CredentialValidation,
 } from "@/lib/storage/credential-types";
 import { CODEX_RESPONSES_URL } from "./config";
+import { getDefaultModel, selectModelForTask } from "./provider-catalog";
 
 export interface OpenAIConnectionInput {
   accessToken: string;
@@ -118,7 +119,9 @@ export async function validateOpenAIConnection(
   }
 
   try {
-    const basicResponse = await runProbe(input, buildValidationProbeBody("gpt-5.4"));
+    const basicModel = getDefaultModel("openai_auth");
+    const liteModel = selectModelForTask("openai_auth", basicModel, "workspace");
+    const basicResponse = await runProbe(input, buildValidationProbeBody(basicModel));
 
     if (!basicResponse.ok) {
       const errorBody = await basicResponse.text();
@@ -139,7 +142,7 @@ export async function validateOpenAIConnection(
 
     const liteModelProbe = await runProbe(
       input,
-      buildValidationProbeBody("gpt-5.4-mini")
+      buildValidationProbeBody(liteModel)
     );
 
     if (!liteModelProbe.ok) {

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { LLMProvider } from "@/lib/llm/provider";
+import { selectModelForTask } from "@/lib/llm/provider-catalog";
 import { readAgentsMd, writeAgentsMd } from "./agents-md";
 
 const IGNORED_DIRS = new Set([
@@ -142,7 +143,7 @@ export async function generateInitialAgentsMd(input: {
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
     ],
-    model: input.model ?? "gpt-5.4-mini",
+    model: input.model ?? selectModelForTask(input.provider.kind, undefined, "workspace"),
     maxTokens: 2048,
     temperature: 0,
   });

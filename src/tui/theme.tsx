@@ -2,6 +2,8 @@ import React, { createContext, useContext } from "react";
 import type { Theme } from "@/lib/config/store";
 
 export interface ThemeColors {
+  // Theme mode for downstream renderers that need light/dark semantics.
+  mode: Theme;
   // Primary accent (headers, active items, borders)
   accent: string;
   // Secondary accent (agent messages, success states)
@@ -29,6 +31,7 @@ export interface ThemeColors {
 }
 
 const DARK_THEME: ThemeColors = {
+  mode: "dark",
   accent: "cyan",
   secondary: "green",
   warning: "yellow",
@@ -44,6 +47,7 @@ const DARK_THEME: ThemeColors = {
 };
 
 const LIGHT_THEME: ThemeColors = {
+  mode: "light",
   accent: "blue",
   secondary: "green",
   warning: "#b8860b",

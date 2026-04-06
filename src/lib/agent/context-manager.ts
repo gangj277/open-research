@@ -1,5 +1,6 @@
 import type { LLMMessage } from "@/lib/llm/types";
 import type { LLMProvider } from "@/lib/llm/provider";
+import { selectModelForTask } from "@/lib/llm/provider-catalog";
 
 // ── Token Estimation ────────────────────────────────────────────────────────
 
@@ -311,7 +312,7 @@ export async function compactConversation(
   const userPrompt = COMPACTION_USER_TEMPLATE.replace("{CUSTOM_INSTRUCTIONS}", customBlock);
 
   // Use a smaller/cheaper model for compaction if available
-  const compactionModel = model.includes("5.4") ? "gpt-5.4-mini" : model;
+  const compactionModel = selectModelForTask(provider.kind, model, "compaction");
 
   const summaryResponse = await provider.callLLM({
     messages: [

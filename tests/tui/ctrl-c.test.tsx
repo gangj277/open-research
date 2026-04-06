@@ -57,6 +57,8 @@ vi.mock("@/lib/config/store", () => ({
   })),
   loadOpenResearchConfig: vi.fn(async () => null),
   saveOpenResearchConfig: vi.fn(async () => {}),
+  getConfiguredOpenAIApiKey: (config: { providers?: { openai?: { apiKey?: string } }; apiKeys?: { openai?: string } } | null | undefined) =>
+    config?.providers?.openai?.apiKey || config?.apiKeys?.openai,
   themeValues: ["dark", "light"],
 }));
 

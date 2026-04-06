@@ -1,15 +1,24 @@
 import { validateOpenAIConnection } from "@/lib/llm/openai-connection";
-import { loadStoredAuth, saveStoredAuth } from "./store";
+import {
+  getConfiguredProviderSummary,
+  resolveConfiguredProvider,
+} from "@/lib/llm/provider-resolution";
+import { saveStoredAuth } from "./store";
 
 export async function getAuthStatus(options?: { homeDir?: string }) {
-  const stored = await loadStoredAuth({ homeDir: options?.homeDir });
-  if (!stored) {
+  const resolved = await resolveConfiguredProvider({ homeDir: options?.homeDir });
+  if (!resolved) {
     return {
       connected: false as const,
-      message: "No OpenAI auth stored.",
+      message: "No OpenAI credentials configured. Set OPENAI_API_KEY, run /config apikey <key>, or run /auth.",
     };
   }
 
+  if (resolved.kind === "openai_api_key") {
+    return getConfiguredProviderSummary({ homeDir: options?.homeDir });
+  }
+
+  const stored = resolved.stored;
   const validation = await validateOpenAIConnection({
     accessToken: stored.tokens.access,
     refreshToken: stored.tokens.refresh,
@@ -25,6 +34,7 @@ export async function getAuthStatus(options?: { homeDir?: string }) {
     connected: validation.ok,
     message: validation.ok ? "Connected" : validation.lastErrorMessage ?? "Unavailable",
     validation,
+    source: resolved.source,
     stored,
   };
 }

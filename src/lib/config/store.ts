@@ -5,16 +5,24 @@ import { readJsonFile, writeJsonFile } from "@/lib/fs/json";
 export const themeValues = ["dark", "light"] as const;
 export type Theme = (typeof themeValues)[number];
 
+const openAIProviderConfigSchema = z.object({
+  apiKey: z.string().optional(),
+}).optional();
+
 export const openResearchConfigSchema = z.object({
   version: z.literal(1),
   defaults: z.object({
     model: z.string().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high"]),
+    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
     editPolicy: z.literal("mixed"),
   }),
   theme: z.enum(themeValues).default("dark"),
   lastWorkspace: z.string().nullable(),
+  providers: z.object({
+    openai: openAIProviderConfigSchema,
+  }).optional(),
   apiKeys: z.object({
+    openai: z.string().optional(),
     semanticScholar: z.string().optional(),
     openAlex: z.string().optional(),
   }).optional(),
@@ -31,8 +39,18 @@ export const DEFAULT_OPEN_RESEARCH_CONFIG: OpenResearchConfig = {
   },
   theme: "dark",
   lastWorkspace: null,
+  providers: {
+    openai: {},
+  },
   apiKeys: {},
 };
+
+/** Get the configured OpenAI API key from provider-scoped config or legacy apiKeys */
+export function getConfiguredOpenAIApiKey(
+  config?: OpenResearchConfig | null
+): string | undefined {
+  return config?.providers?.openai?.apiKey || config?.apiKeys?.openai;
+}
 
 /** Get the Semantic Scholar API key from config or environment */
 export function getSemanticScholarApiKey(config?: OpenResearchConfig | null): string | undefined {

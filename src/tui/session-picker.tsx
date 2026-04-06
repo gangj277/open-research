@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { SavedSession } from "@/lib/workspace/sessions";
+import { useTheme } from "@/tui/theme";
 
 export interface SessionPickerProps {
   sessions: SavedSession[];
@@ -25,6 +26,7 @@ function truncate(text: string, max: number): string {
 }
 
 export function SessionPicker({ sessions, onSelect, onCancel }: SessionPickerProps) {
+  const theme = useTheme();
   const [filter, setFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -90,26 +92,26 @@ export function SessionPicker({ sessions, onSelect, onCancel }: SessionPickerPro
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       {/* Header */}
-      <Text bold>/resume</Text>
-      <Text color="gray" dimColor>
+      <Text bold color={theme.accent}>/resume</Text>
+      <Text color={theme.muted} dimColor>
         {sessions.length} session{sessions.length !== 1 ? "s" : ""} in this workspace
       </Text>
 
       {/* Search box */}
       <Box
         borderStyle="round"
-        borderColor={filter ? "cyan" : "gray"}
+        borderColor={filter ? theme.borderFocused : theme.borderDefault}
         paddingX={1}
         marginTop={1}
         marginBottom={1}
       >
-        <Text color="gray">{"\u2315"} </Text>
-        <Text>{filter || <Text color="gray">Search sessions...</Text>}</Text>
+        <Text color={theme.muted}>{"\u2315"} </Text>
+        <Text color={theme.text}>{filter || <Text color={theme.muted}>Search sessions...</Text>}</Text>
       </Box>
 
       {/* Session list */}
       {filtered.length === 0 ? (
-        <Text color="gray">{filter ? "No matching sessions." : "No sessions found."}</Text>
+        <Text color={theme.muted}>{filter ? "No matching sessions." : "No sessions found."}</Text>
       ) : (
         <Box flexDirection="column">
           {filtered.slice(0, 12).map((session, idx) => {
@@ -129,7 +131,7 @@ export function SessionPicker({ sessions, onSelect, onCancel }: SessionPickerPro
                     <Text inverse dimColor>{` ${meta} `}</Text>
                   </Box>
                   <Box marginLeft={3}>
-                    <Text color="gray" dimColor>id: {session.id.slice(0, 8)} \u00B7 started {new Date(session.startedAt).toLocaleString()}</Text>
+                    <Text color={theme.muted} dimColor>id: {session.id.slice(0, 8)} \u00B7 started {new Date(session.startedAt).toLocaleString()}</Text>
                   </Box>
                 </Box>
               );
@@ -137,21 +139,21 @@ export function SessionPicker({ sessions, onSelect, onCancel }: SessionPickerPro
 
             return (
               <Box key={session.id}>
-                <Text color="gray">{"  "}</Text>
-                <Text>{truncate(preview, width - meta.length - 8)}</Text>
-                <Text color="gray" dimColor>{` ${meta}`}</Text>
+                <Text color={theme.muted}>{"  "}</Text>
+                <Text color={theme.text}>{truncate(preview, width - meta.length - 8)}</Text>
+                <Text color={theme.muted} dimColor>{` ${meta}`}</Text>
               </Box>
             );
           })}
           {filtered.length > 12 && (
-            <Text color="gray" dimColor>  \u2193 {filtered.length - 12} more below</Text>
+            <Text color={theme.muted} dimColor>  \u2193 {filtered.length - 12} more below</Text>
           )}
         </Box>
       )}
 
       {/* Footer */}
       <Box marginTop={1}>
-        <Text color="gray" dimColor>
+        <Text color={theme.muted} dimColor>
           \u2191/\u2193 to select \u00B7 Enter resume \u00B7 Type to filter \u00B7 Esc cancel
         </Text>
       </Box>

@@ -1001,7 +1001,7 @@ export function App({
         startTransition(() => {
           setMessages((current) => [
             ...current,
-            { role: "system", text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
           ]);
         });
       }
@@ -1111,7 +1111,7 @@ export function App({
         startTransition(() => {
           setMessages((current) => [
             ...current,
-            { role: "system", text: `Error: ${error instanceof Error ? error.message : String(error)}` },
+            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
           ]);
         });
       }

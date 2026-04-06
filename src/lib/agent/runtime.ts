@@ -13,7 +13,7 @@ import {
   getContextWindow,
   type SessionTokenUsage,
 } from "./context-manager";
-import { loadMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
+import { loadAllMemories, selectRelevantMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
 import { extractAndStoreMemories } from "@/lib/memory/extractor";
 import { readAgentsMd, maybeUpdateAgentsMd } from "@/lib/workspace/agents-md";
 
@@ -160,18 +160,24 @@ export async function runAgentTurn(input: {
   const model = input.model ?? "gpt-5.4";
   const usage = input.sessionUsage ?? createSessionUsage();
 
-  // Load user memories and project-level AGENTS.md
-  const memories = await loadMemories({ homeDir: input.homeDir });
-  const memoryBlock = formatMemoriesForPrompt(memories);
+  // Load memories (global + project), select only relevant ones based on query
+  const allMemories = await loadAllMemories({
+    homeDir: input.homeDir,
+    workspaceDir: input.workspace.workspaceDir,
+  });
+  const relevantMemories = selectRelevantMemories(allMemories, input.message);
+  const memoryBlock = formatMemoriesForPrompt(relevantMemories);
+
+  // Load project-level AGENTS.md
   const agentsMd = input.workspace.workspaceDir
     ? await readAgentsMd(input.workspace.workspaceDir).catch(() => "")
     : "";
-  const contextBlocks = [
+
+  const fullSystemPrompt = [
     systemPrompt,
-    memoryBlock ? memoryBlock : null,
+    memoryBlock || null,
     agentsMd ? `## Project Context (from AGENTS.md)\n${agentsMd}` : null,
   ].filter(Boolean).join("\n\n");
-  const fullSystemPrompt = contextBlocks;
 
   let messages: LLMMessage[] = [
     { role: "system", content: fullSystemPrompt },
@@ -243,6 +249,7 @@ export async function runAgentTurn(input: {
         provider: input.provider,
         model: "gpt-5.4-mini",
         homeDir: input.homeDir,
+        workspaceDir: input.workspace.workspaceDir,
       }).then((stored) => {
         if (stored.length > 0) {
           input.onMemoryExtracted?.(stored.map((m) => m.content));

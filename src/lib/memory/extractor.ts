@@ -1,63 +1,77 @@
 import type { LLMProvider } from "@/lib/llm/provider";
 import type { PathOptions } from "@/lib/fs/paths";
-import { addMemory, loadMemories, type Memory } from "./store";
+import { addMemory, loadAllMemories, type Memory } from "./store";
 
 // ── Memory Extraction Prompt ────────────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are a memory extraction system. Your job is to identify facts worth remembering about the user from a conversation exchange.
+const EXTRACTION_PROMPT = `You are a memory management system. You decide what to remember about the user across sessions.
 
-Focus on:
-- Who they are (role, field, institution, expertise level)
-- What they're working on (current research projects, topics, deadlines)
-- How they prefer to work (preferred tools, languages, writing style, methodologies)
-- Methodological preferences (statistical approaches, theoretical frameworks, citation style)
-- Important context (collaborators, advisors, publication targets, funding constraints)
+You will receive:
+1. The current conversation exchange
+2. ALL existing memories (both global and project-level)
 
-Rules:
-- Only extract facts that would be useful in FUTURE conversations
-- Be specific and concise — each memory should be one clear fact
-- Do NOT extract task-specific details that only matter for the current conversation
-- Do NOT extract obvious things ("user asked about papers" is not useful)
-- If there is nothing meaningful to remember, return an empty array
-- Maximum 3 new memories per exchange
+Your job: decide if any NEW memories should be created OR if any existing memories need updating.
 
-Existing memories (do not duplicate these):
+CRITICAL RULES:
+- Do NOT create a memory if an existing memory already covers the same fact
+- If a fact has CHANGED (e.g., user switched from Python to R), output an UPDATE to the existing memory instead of creating a new one
+- Only create memories for facts useful in FUTURE sessions, not task-specific details
+- Maximum 3 actions per exchange
+- If nothing meaningful to remember, return an empty array
+
+Categories:
+- "user" — identity, role, field, institution (→ stored globally)
+- "preference" — tools, style, methodology preferences (→ stored globally)
+- "project" — current research topics, findings, hypotheses (→ stored per-project)
+- "methodology" — statistical approaches, frameworks (→ stored globally)
+- "context" — deadlines, collaborators, constraints (→ stored per-project)
+
+Existing memories:
 {EXISTING_MEMORIES}
 
-Respond with a JSON array of objects, each with "content" (string) and "category" (one of: "user", "preference", "project", "methodology", "context"). If nothing worth remembering, respond with [].
+Respond with a JSON array. Each item has:
+- "action": "create" or "update"
+- "content": the memory text (for create: new content; for update: the updated content)
+- "category": one of the categories above
+- "updateId": (only for "update") the ID of the existing memory to update
 
-Example response:
-[{"content": "PhD student in computational neuroscience at MIT", "category": "user"}, {"content": "Prefers Python with statsmodels for statistical analysis over R", "category": "preference"}]`;
+If nothing to do, respond with [].
+
+Example:
+[{"action": "create", "content": "PhD student in neuroscience at MIT", "category": "user"}]
+[{"action": "update", "updateId": "abc123", "content": "Now using R instead of Python for analysis", "category": "preference"}]`;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-interface ExtractedMemory {
+interface ExtractedAction {
+  action: "create" | "update";
   content: string;
   category: "user" | "preference" | "project" | "methodology" | "context";
+  updateId?: string;
 }
 
 // ── Extraction ──────────────────────────────────────────────────────────────
 
-/**
- * Analyze a conversation exchange and extract memories worth storing.
- * Runs as a lightweight background LLM call — does not block the main agent loop.
- */
 export async function extractMemories(input: {
   userMessage: string;
   agentResponse: string;
   provider: LLMProvider;
   model?: string;
   homeDir?: string;
-}): Promise<ExtractedMemory[]> {
-  const existing = await loadMemories({ homeDir: input.homeDir });
+  workspaceDir?: string;
+}): Promise<ExtractedAction[]> {
+  // Load both global and project memories
+  const existing = await loadAllMemories({
+    homeDir: input.homeDir,
+    workspaceDir: input.workspaceDir,
+  });
 
-  // Don't extract if the message is just a slash command or very short
   if (input.userMessage.startsWith("/") || input.userMessage.length < 20) {
     return [];
   }
 
   const existingList = existing.length > 0
-    ? existing.map((m) => `- [${m.category}] ${m.content}`).join("\n")
+    ? existing.map((m) => `- [${m.scope}/${m.category}] (id: ${m.id.slice(0, 8)}) ${m.content}`).join("\n")
     : "(none)";
 
   const prompt = EXTRACTION_PROMPT.replace("{EXISTING_MEMORIES}", existingList);
@@ -78,9 +92,7 @@ export async function extractMemories(input: {
       temperature: 0,
     });
 
-    // Parse the JSON response
     const raw = response.content.trim();
-    // Handle markdown code blocks
     const jsonStr = raw.startsWith("```")
       ? raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "")
       : raw;
@@ -88,30 +100,32 @@ export async function extractMemories(input: {
     const parsed = JSON.parse(jsonStr);
     if (!Array.isArray(parsed)) return [];
 
-    const valid: ExtractedMemory[] = [];
+    const valid: ExtractedAction[] = [];
     for (const item of parsed) {
       if (
         typeof item.content === "string" &&
         item.content.length > 5 &&
-        ["user", "preference", "project", "methodology", "context"].includes(item.category)
+        ["user", "preference", "project", "methodology", "context"].includes(item.category) &&
+        ["create", "update"].includes(item.action)
       ) {
         valid.push({
+          action: item.action,
           content: item.content,
           category: item.category,
+          updateId: typeof item.updateId === "string" ? item.updateId : undefined,
         });
       }
     }
 
     return valid.slice(0, 3);
   } catch {
-    // Extraction is best-effort — never fail the main flow
     return [];
   }
 }
 
 /**
  * Extract and store memories from a conversation exchange.
- * Runs in the background — fire and forget.
+ * Handles both creates and updates.
  */
 export async function extractAndStoreMemories(input: {
   userMessage: string;
@@ -119,14 +133,42 @@ export async function extractAndStoreMemories(input: {
   provider: LLMProvider;
   model?: string;
   homeDir?: string;
+  workspaceDir?: string;
 }): Promise<Memory[]> {
-  const extracted = await extractMemories(input);
-  const stored: Memory[] = [];
+  const actions = await extractMemories(input);
+  const results: Memory[] = [];
 
-  for (const mem of extracted) {
-    const saved = await addMemory(mem, { homeDir: input.homeDir });
-    stored.push(saved);
+  // Load existing for update lookups
+  const existing = await loadAllMemories({
+    homeDir: input.homeDir,
+    workspaceDir: input.workspaceDir,
+  });
+
+  for (const action of actions) {
+    if (action.action === "update" && action.updateId) {
+      // Find and update the existing memory
+      const target = existing.find((m) => m.id.startsWith(action.updateId!));
+      if (target) {
+        target.content = action.content;
+        target.lastRelevantAt = new Date().toISOString();
+        target.relevanceCount++;
+        // Re-save by adding (addMemory handles dedup and will update in place)
+        const saved = await addMemory(
+          { content: action.content, category: action.category, scope: target.scope },
+          { homeDir: input.homeDir, workspaceDir: input.workspaceDir }
+        );
+        results.push(saved);
+      }
+    } else {
+      // Create new
+      const scope = (action.category === "project" || action.category === "context") ? "project" : "global";
+      const saved = await addMemory(
+        { content: action.content, category: action.category, scope },
+        { homeDir: input.homeDir, workspaceDir: input.workspaceDir }
+      );
+      results.push(saved);
+    }
   }
 
-  return stored;
+  return results;
 }

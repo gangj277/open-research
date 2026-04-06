@@ -118,26 +118,25 @@ describe("formatMemoriesForPrompt", () => {
   test("formats memories grouped by category", () => {
     const memories = [
       {
-        id: "1", content: "PhD student", category: "user" as const,
+        id: "1", content: "PhD student", category: "user" as const, scope: "global" as const,
         createdAt: "", lastRelevantAt: "", relevanceCount: 1,
       },
       {
-        id: "2", content: "Prefers Python", category: "preference" as const,
+        id: "2", content: "Prefers Python", category: "preference" as const, scope: "global" as const,
         createdAt: "", lastRelevantAt: "", relevanceCount: 1,
       },
       {
-        id: "3", content: "Working on climate", category: "project" as const,
+        id: "3", content: "Working on climate", category: "project" as const, scope: "project" as const,
         createdAt: "", lastRelevantAt: "", relevanceCount: 1,
       },
     ];
 
     const result = formatMemoriesForPrompt(memories);
-    expect(result).toContain("What I Remember About You");
+    expect(result).toContain("Relevant Context");
     expect(result).toContain("PhD student");
     expect(result).toContain("Prefers Python");
     expect(result).toContain("Working on climate");
-    expect(result).toContain("About you");
-    expect(result).toContain("Your preferences");
-    expect(result).toContain("Your projects");
+    expect(result).toContain("About you");      // global memories
+    expect(result).toContain("This project");   // project memories
   });
 });

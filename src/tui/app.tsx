@@ -36,7 +36,7 @@ import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { getPendingQuestion, clearPendingQuestion, resetPendingQuestions, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
-import { loadMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
+import { loadAllMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
 import { generateInitialAgentsMd } from "@/lib/workspace/init-agents-md";
 import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import {

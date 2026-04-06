@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import chalk from "chalk";
 
@@ -77,12 +77,23 @@ export default function TextInput({
   cursorToEnd = 0,
 }: TextInputProps) {
   const [cursorOffset, setCursorOffset] = useState(originalValue.length);
+  const valueRef = useRef(originalValue);
+  const cursorOffsetRef = useRef(originalValue.length);
   const pasteMapRef = useRef<Map<number, { text: string; lineCount: number; id: number }>>(new Map());
   const pasteCounterRef = useRef(0);
 
   useEffect(() => {
+    valueRef.current = originalValue;
+  }, [originalValue]);
+
+  useEffect(() => {
+    cursorOffsetRef.current = cursorOffset;
+  }, [cursorOffset]);
+
+  useEffect(() => {
     if (!focus || !showCursor) return;
     if (cursorOffset > originalValue.length) {
+      cursorOffsetRef.current = originalValue.length;
       setCursorOffset(originalValue.length);
     }
   }, [originalValue, focus, showCursor]);
@@ -90,6 +101,7 @@ export default function TextInput({
   // Move cursor to end when parent signals (e.g. after autocomplete)
   useEffect(() => {
     if (cursorToEnd > 0) {
+      cursorOffsetRef.current = originalValue.length;
       setCursorOffset(originalValue.length);
     }
   }, [cursorToEnd]);
@@ -163,6 +175,9 @@ export default function TextInput({
 
   useInput(
     (input, key) => {
+      const currentValue = valueRef.current;
+      const currentCursor = cursorOffsetRef.current;
+
       // Pass-through keys we don't handle
       if ((key.ctrl && input === "c") || (key.shift && key.tab)) {
         return;
@@ -185,62 +200,64 @@ export default function TextInput({
       // Newline insertion: Shift+Enter (kitty terminals) OR Alt+Enter (universal)
       if ((key.return && key.shift) || (key.return && key.meta)) {
         const inserted =
-          originalValue.slice(0, cursorOffset) +
+          currentValue.slice(0, currentCursor) +
           "\n" +
-          originalValue.slice(cursorOffset);
-        setCursorOffset(cursorOffset + 1);
+          currentValue.slice(currentCursor);
+        cursorOffsetRef.current = currentCursor + 1;
+        valueRef.current = inserted;
+        setCursorOffset(currentCursor + 1);
         onChange(inserted);
         return;
       }
 
       if (key.return) {
         // Expand paste markers back to full content before submitting
-        const expanded = expandPasteMarkers(originalValue, pasteMapRef.current);
+        const expanded = expandPasteMarkers(currentValue, pasteMapRef.current);
         onSubmit?.(expanded);
         return;
       }
 
-      let nextValue = originalValue;
-      let nextCursor = cursorOffset;
+      let nextValue = currentValue;
+      let nextCursor = currentCursor;
 
       // ── Delete word backward: Option+Backspace or Ctrl+W ──
       if (
         (key.meta && key.backspace) ||
         (key.ctrl && input === "w")
       ) {
-        const boundary = prevWordBoundary(originalValue, cursorOffset);
+        const boundary = prevWordBoundary(currentValue, currentCursor);
         nextValue =
-          originalValue.slice(0, boundary) +
-          originalValue.slice(cursorOffset);
+          currentValue.slice(0, boundary) +
+          currentValue.slice(currentCursor);
         nextCursor = boundary;
       }
       // ── Delete to start of line: Ctrl+U ──
       else if (key.ctrl && input === "u") {
-        nextValue = originalValue.slice(cursorOffset);
+        nextValue = currentValue.slice(currentCursor);
         nextCursor = 0;
       }
       // ── Delete to end of line: Ctrl+K ──
       else if (key.ctrl && input === "k") {
-        nextValue = originalValue.slice(0, cursorOffset);
+        nextValue = currentValue.slice(0, currentCursor);
         // cursor stays
       }
       // ── Delete word forward: Option+Delete or Ctrl+D with meta ──
       else if (key.meta && key.delete) {
-        const boundary = nextWordBoundary(originalValue, cursorOffset);
+        const boundary = nextWordBoundary(currentValue, currentCursor);
         nextValue =
-          originalValue.slice(0, cursorOffset) +
-          originalValue.slice(boundary);
+          currentValue.slice(0, currentCursor) +
+          currentValue.slice(boundary);
       }
       // ── Single char backspace ──
       else if (key.backspace || key.delete) {
-        if (cursorOffset > 0) {
+        if (currentCursor > 0) {
           // If deleting a paste marker, remove from paste map
-          const deletedChar = originalValue[cursorOffset - 1];
+          const deletedChar = currentValue[currentCursor - 1];
           if (deletedChar === PASTE_MARKER) {
             // Find which paste ID corresponds to this marker position
             let markerIndex = 0;
-            for (let ci = 0; ci < cursorOffset - 1; ci++) {
-              if (originalValue[ci] === PASTE_MARKER) markerIndex++;
+            for (let ci = 0; ci < currentCursor - 1; ci++) {
+              if (currentValue[ci] === PASTE_MARKER) markerIndex++;
             }
             const ids = [...pasteMapRef.current.keys()].sort((a, b) => a - b);
             if (markerIndex < ids.length) {
@@ -248,8 +265,8 @@ export default function TextInput({
             }
           }
           nextValue =
-            originalValue.slice(0, cursorOffset - 1) +
-            originalValue.slice(cursorOffset);
+            currentValue.slice(0, currentCursor - 1) +
+            currentValue.slice(currentCursor);
           nextCursor--;
         }
       }
@@ -259,7 +276,7 @@ export default function TextInput({
         (key.meta && input === "b") ||
         (key.ctrl && key.leftArrow)
       ) {
-        nextCursor = prevWordBoundary(originalValue, cursorOffset);
+        nextCursor = prevWordBoundary(currentValue, currentCursor);
       }
       // ── Move word right: Option+Right or ESC+f or Ctrl+Right ──
       else if (
@@ -267,7 +284,7 @@ export default function TextInput({
         (key.meta && input === "f") ||
         (key.ctrl && key.rightArrow)
       ) {
-        nextCursor = nextWordBoundary(originalValue, cursorOffset);
+        nextCursor = nextWordBoundary(currentValue, currentCursor);
       }
       // ── Move to start: Ctrl+A or Home ──
       else if ((key.ctrl && input === "a") || key.home) {
@@ -275,7 +292,7 @@ export default function TextInput({
       }
       // ── Move to end: Ctrl+E or End ──
       else if ((key.ctrl && input === "e") || key.end) {
-        nextCursor = originalValue.length;
+        nextCursor = currentValue.length;
       }
       // ── Arrow left ──
       else if (key.leftArrow) {
@@ -302,15 +319,15 @@ export default function TextInput({
             const id = ++pasteCounterRef.current;
             pasteMapRef.current.set(id, { text: clean, lineCount, id });
             nextValue =
-              originalValue.slice(0, cursorOffset) +
+              currentValue.slice(0, currentCursor) +
               PASTE_MARKER +
-              originalValue.slice(cursorOffset);
+              currentValue.slice(currentCursor);
             nextCursor += 1;
           } else {
             nextValue =
-              originalValue.slice(0, cursorOffset) +
+              currentValue.slice(0, currentCursor) +
               clean +
-              originalValue.slice(cursorOffset);
+              currentValue.slice(currentCursor);
             nextCursor += clean.length;
           }
         }
@@ -320,8 +337,14 @@ export default function TextInput({
       // Clamp cursor
       nextCursor = Math.max(0, Math.min(nextCursor, nextValue.length));
 
+      if (nextValue === "") {
+        pasteMapRef.current.clear();
+      }
+
+      cursorOffsetRef.current = nextCursor;
       setCursorOffset(nextCursor);
-      if (nextValue !== originalValue) {
+      if (nextValue !== currentValue) {
+        valueRef.current = nextValue;
         onChange(nextValue);
       }
     },

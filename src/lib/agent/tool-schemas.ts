@@ -215,12 +215,30 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "search_external_sources",
-      description: "Search OpenAlex, Semantic Scholar, and arXiv for academic papers.",
+      description:
+        "Search OpenAlex, Semantic Scholar, and arXiv for academic papers. " +
+        "Provide one or more search queries. The first query is the primary search; " +
+        "additional queries are variations to broaden coverage.",
       parameters: {
         type: "object",
         properties: {
-          searches: { type: "array", items: { type: "object" } },
-          num_results: { type: "number" },
+          searches: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                query: { type: "string", description: "The search query string." },
+                intent: { type: "string", description: "Brief description of what you're looking for with this query." },
+              },
+              required: ["query"],
+              additionalProperties: false,
+            },
+            description: "Array of search queries. First is primary, rest are variations.",
+          },
+          num_results: {
+            type: "number",
+            description: "Maximum number of results to return. Default: 8.",
+          },
         },
         required: ["searches"],
         additionalProperties: false,

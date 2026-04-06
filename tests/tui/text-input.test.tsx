@@ -56,4 +56,25 @@ describe("TextInput burst input handling", () => {
     );
     unmount();
   });
+
+  test("renders one paste badge for a fragmented bracketed multi-line paste", async () => {
+    function Wrapper() {
+      const [value, setValue] = React.useState("");
+      return <TextInput value={value} onChange={setValue} focus showCursor />;
+    }
+
+    const { stdin, lastFrame, unmount } = render(<Wrapper />, {
+      stdout: { columns: 160 },
+    });
+
+    stdin.write("\u001b[200~/quit");
+    stdin.write("\n! bun install -g open-research@latest");
+    stdin.write("\nopen-research ready output\u001b[201~");
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(lastFrame()).not.toContain("/quit");
+    expect(lastFrame()).toContain("[Pasted text #1 +2 lines]");
+    unmount();
+  });
 });

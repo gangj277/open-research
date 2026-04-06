@@ -4,6 +4,8 @@ import chalk from "chalk";
 
 /** Placeholder character for collapsed paste chunks in the value string. */
 const PASTE_MARKER = "\uFFFC";
+const BRACKETED_PASTE_START = "[200~";
+const BRACKETED_PASTE_END = "[201~";
 
 export interface TextInputProps {
   value: string;
@@ -81,6 +83,7 @@ export default function TextInput({
   const cursorOffsetRef = useRef(originalValue.length);
   const pasteMapRef = useRef<Map<number, { text: string; lineCount: number; id: number }>>(new Map());
   const pasteCounterRef = useRef(0);
+  const bracketedPasteBufferRef = useRef<string | null>(null);
 
   useEffect(() => {
     valueRef.current = originalValue;
@@ -173,6 +176,48 @@ export default function TextInput({
         ? chalk.grey(placeholder)
         : undefined;
 
+  function sanitizeInput(raw: string): string {
+    return raw
+      .replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z~]/g, "")
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
+      .replace(/\[20[01]~/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+  }
+
+  function insertCleanText(
+    raw: string,
+    currentValue: string,
+    currentCursor: number,
+  ): { nextValue: string; nextCursor: number } {
+    const clean = sanitizeInput(raw);
+    if (!clean) {
+      return { nextValue: currentValue, nextCursor: currentCursor };
+    }
+
+    const lineCount = (clean.match(/\n/g) || []).length;
+    if (lineCount >= 2) {
+      const id = ++pasteCounterRef.current;
+      pasteMapRef.current.set(id, { text: clean, lineCount, id });
+      return {
+        nextValue:
+          currentValue.slice(0, currentCursor) +
+          PASTE_MARKER +
+          currentValue.slice(currentCursor),
+        nextCursor: currentCursor + 1,
+      };
+    }
+
+    return {
+      nextValue:
+        currentValue.slice(0, currentCursor) +
+        clean +
+        currentValue.slice(currentCursor),
+      nextCursor: currentCursor + clean.length,
+    };
+  }
+
   useInput(
     (input, key) => {
       const currentValue = valueRef.current;
@@ -231,15 +276,22 @@ export default function TextInput({
           currentValue.slice(currentCursor);
         nextCursor = boundary;
       }
-      // ── Delete to start of line: Ctrl+U ──
+      // ── Delete to start of line: Ctrl+U / Cmd+Backspace ──
       else if (key.ctrl && input === "u") {
-        nextValue = currentValue.slice(currentCursor);
-        nextCursor = 0;
+        // Find the start of the current line (nearest \n before cursor, or 0)
+        const lineStart = currentValue.lastIndexOf("\n", currentCursor - 1) + 1;
+        nextValue =
+          currentValue.slice(0, lineStart) +
+          currentValue.slice(currentCursor);
+        nextCursor = lineStart;
       }
       // ── Delete to end of line: Ctrl+K ──
       else if (key.ctrl && input === "k") {
-        nextValue = currentValue.slice(0, currentCursor);
-        // cursor stays
+        // Find the end of the current line (nearest \n after cursor, or end)
+        const lineEnd = currentValue.indexOf("\n", currentCursor);
+        nextValue =
+          currentValue.slice(0, currentCursor) +
+          (lineEnd === -1 ? "" : currentValue.slice(lineEnd));
       }
       // ── Delete word forward: Option+Delete or Ctrl+D with meta ──
       else if (key.meta && key.delete) {
@@ -304,32 +356,64 @@ export default function TextInput({
       }
       // ── Regular character input ──
       else if (!key.ctrl && !key.meta) {
-        // Strip terminal escape sequences and control chars
-        const clean = input
-          .replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z~]/g, "")
-          .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
-          .replace(/\[20[01]~/g, "")
-          .replace(/\r\n/g, "\n")
-          .replace(/\r/g, "\n")
-          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
-        if (clean) {
-          const lineCount = (clean.match(/\n/g) || []).length;
-          // Multi-line paste: collapse to a single marker character
-          if (lineCount >= 2) {
-            const id = ++pasteCounterRef.current;
-            pasteMapRef.current.set(id, { text: clean, lineCount, id });
-            nextValue =
-              currentValue.slice(0, currentCursor) +
-              PASTE_MARKER +
-              currentValue.slice(currentCursor);
-            nextCursor += 1;
-          } else {
-            nextValue =
-              currentValue.slice(0, currentCursor) +
-              clean +
-              currentValue.slice(currentCursor);
-            nextCursor += clean.length;
+        const hasPasteMarkers =
+          input.includes(BRACKETED_PASTE_START) ||
+          input.includes(BRACKETED_PASTE_END) ||
+          bracketedPasteBufferRef.current !== null;
+
+        if (hasPasteMarkers) {
+          let remaining = input;
+          let workingValue = currentValue;
+          let workingCursor = currentCursor;
+
+          while (remaining.length > 0) {
+            if (bracketedPasteBufferRef.current === null) {
+              const startIndex = remaining.indexOf(BRACKETED_PASTE_START);
+              if (startIndex === -1) {
+                const inserted = insertCleanText(remaining, workingValue, workingCursor);
+                workingValue = inserted.nextValue;
+                workingCursor = inserted.nextCursor;
+                remaining = "";
+                break;
+              }
+
+              const prefix = remaining.slice(0, startIndex);
+              if (prefix) {
+                const inserted = insertCleanText(prefix, workingValue, workingCursor);
+                workingValue = inserted.nextValue;
+                workingCursor = inserted.nextCursor;
+              }
+
+              bracketedPasteBufferRef.current = "";
+              remaining = remaining.slice(startIndex + BRACKETED_PASTE_START.length);
+              continue;
+            }
+
+            const endIndex = remaining.indexOf(BRACKETED_PASTE_END);
+            if (endIndex === -1) {
+              bracketedPasteBufferRef.current += remaining;
+              remaining = "";
+              break;
+            }
+
+            bracketedPasteBufferRef.current += remaining.slice(0, endIndex);
+            const inserted = insertCleanText(
+              bracketedPasteBufferRef.current,
+              workingValue,
+              workingCursor,
+            );
+            workingValue = inserted.nextValue;
+            workingCursor = inserted.nextCursor;
+            bracketedPasteBufferRef.current = null;
+            remaining = remaining.slice(endIndex + BRACKETED_PASTE_END.length);
           }
+
+          nextValue = workingValue;
+          nextCursor = workingCursor;
+        } else {
+          const inserted = insertCleanText(input, currentValue, currentCursor);
+          nextValue = inserted.nextValue;
+          nextCursor = inserted.nextCursor;
         }
       }
       // Ignore other ctrl/meta combos we don't handle

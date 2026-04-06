@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import chalk from "chalk";
+
+/** Placeholder character for collapsed paste chunks in the value string. */
+const PASTE_MARKER = "\uFFFC";
 
 export interface TextInputProps {
   value: string;
@@ -14,6 +17,26 @@ export interface TextInputProps {
   showCursor?: boolean;
   /** Increment this number to force-move the cursor to end of value. */
   cursorToEnd?: number;
+}
+
+/** Expand all paste markers in a string back to their original content. */
+function expandPasteMarkers(
+  value: string,
+  pasteMap: Map<number, { text: string }>
+): string {
+  let result = "";
+  let pasteIdx = 0;
+  const ids = [...pasteMap.keys()].sort((a, b) => a - b);
+  for (const char of value) {
+    if (char === PASTE_MARKER && pasteIdx < ids.length) {
+      const entry = pasteMap.get(ids[pasteIdx]!);
+      result += entry?.text ?? "";
+      pasteIdx++;
+    } else {
+      result += char;
+    }
+  }
+  return result;
 }
 
 /**
@@ -54,6 +77,8 @@ export default function TextInput({
   cursorToEnd = 0,
 }: TextInputProps) {
   const [cursorOffset, setCursorOffset] = useState(originalValue.length);
+  const pasteMapRef = useRef<Map<number, { text: string; lineCount: number; id: number }>>(new Map());
+  const pasteCounterRef = useRef(0);
 
   useEffect(() => {
     if (!focus || !showCursor) return;
@@ -69,15 +94,39 @@ export default function TextInput({
     }
   }, [cursorToEnd]);
 
-  // Build a rendered string with a fake cursor baked in
+  // Clean up paste map when value is cleared
+  useEffect(() => {
+    if (originalValue === "") {
+      pasteMapRef.current.clear();
+    }
+  }, [originalValue]);
+
+  // Build a paste badge string
+  function pasteBadge(entry: { id: number; lineCount: number }): string {
+    return chalk.dim.cyan(`[Pasted text #${entry.id} +${entry.lineCount} lines]`);
+  }
+
+  // Build a rendered string with a fake cursor and paste badges
   function buildRendered(): string {
     if (showCursor && focus) {
       if (originalValue.length === 0) return chalk.inverse(" ");
 
+      // Collect paste IDs in order of appearance
+      const pasteIds = [...pasteMapRef.current.keys()].sort((a, b) => a - b);
+      let pasteIdx = 0;
+
       let result = "";
       let i = 0;
       for (const char of originalValue) {
-        if (i === cursorOffset) {
+        if (char === PASTE_MARKER) {
+          const entry = pasteIdx < pasteIds.length ? pasteMapRef.current.get(pasteIds[pasteIdx]!) : undefined;
+          pasteIdx++;
+          if (i === cursorOffset) {
+            result += entry ? pasteBadge(entry) + chalk.inverse(" ") : chalk.inverse(" ");
+          } else {
+            result += entry ? pasteBadge(entry) : "";
+          }
+        } else if (i === cursorOffset) {
           result += char === "\n" ? chalk.inverse(" ") + "\n" : chalk.inverse(char);
         } else {
           result += char;
@@ -89,7 +138,20 @@ export default function TextInput({
       }
       return result;
     }
-    return originalValue;
+    // Not focused — still render paste badges
+    let result = "";
+    const pasteIds = [...pasteMapRef.current.keys()].sort((a, b) => a - b);
+    let pasteIdx = 0;
+    for (const char of originalValue) {
+      if (char === PASTE_MARKER) {
+        const entry = pasteIdx < pasteIds.length ? pasteMapRef.current.get(pasteIds[pasteIdx]!) : undefined;
+        pasteIdx++;
+        result += entry ? pasteBadge(entry) : "";
+      } else {
+        result += char;
+      }
+    }
+    return result;
   }
 
   const renderedPlaceholder =
@@ -132,7 +194,9 @@ export default function TextInput({
       }
 
       if (key.return) {
-        onSubmit?.(originalValue);
+        // Expand paste markers back to full content before submitting
+        const expanded = expandPasteMarkers(originalValue, pasteMapRef.current);
+        onSubmit?.(expanded);
         return;
       }
 
@@ -170,6 +234,19 @@ export default function TextInput({
       // ── Single char backspace ──
       else if (key.backspace || key.delete) {
         if (cursorOffset > 0) {
+          // If deleting a paste marker, remove from paste map
+          const deletedChar = originalValue[cursorOffset - 1];
+          if (deletedChar === PASTE_MARKER) {
+            // Find which paste ID corresponds to this marker position
+            let markerIndex = 0;
+            for (let ci = 0; ci < cursorOffset - 1; ci++) {
+              if (originalValue[ci] === PASTE_MARKER) markerIndex++;
+            }
+            const ids = [...pasteMapRef.current.keys()].sort((a, b) => a - b);
+            if (markerIndex < ids.length) {
+              pasteMapRef.current.delete(ids[markerIndex]!);
+            }
+          }
           nextValue =
             originalValue.slice(0, cursorOffset - 1) +
             originalValue.slice(cursorOffset);
@@ -210,11 +287,7 @@ export default function TextInput({
       }
       // ── Regular character input ──
       else if (!key.ctrl && !key.meta) {
-        // Strip terminal escape sequences:
-        // - CSI sequences: ESC [ ... letter/tilde (covers bracketed paste markers [200~ / [201~)
-        // - OSC sequences: ESC ] ... BEL/ST
-        // - Lone ESC prefix leftovers
-        // Then strip control characters (except \t and \n which are valid in multiline input)
+        // Strip terminal escape sequences and control chars
         const clean = input
           .replace(/\x1b\[[?>=!]*[0-9;]*[a-zA-Z~]/g, "")
           .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
@@ -223,11 +296,23 @@ export default function TextInput({
           .replace(/\r/g, "\n")
           .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
         if (clean) {
-          nextValue =
-            originalValue.slice(0, cursorOffset) +
-            clean +
-            originalValue.slice(cursorOffset);
-          nextCursor += clean.length;
+          const lineCount = (clean.match(/\n/g) || []).length;
+          // Multi-line paste: collapse to a single marker character
+          if (lineCount >= 2) {
+            const id = ++pasteCounterRef.current;
+            pasteMapRef.current.set(id, { text: clean, lineCount, id });
+            nextValue =
+              originalValue.slice(0, cursorOffset) +
+              PASTE_MARKER +
+              originalValue.slice(cursorOffset);
+            nextCursor += 1;
+          } else {
+            nextValue =
+              originalValue.slice(0, cursorOffset) +
+              clean +
+              originalValue.slice(cursorOffset);
+            nextCursor += clean.length;
+          }
         }
       }
       // Ignore other ctrl/meta combos we don't handle

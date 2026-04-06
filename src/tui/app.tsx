@@ -236,7 +236,7 @@ export function App({
       return getFileSuggestions(atMention.partial, workspaceFiles);
     }
     // / command trigger
-    if (!input.startsWith("/") || input.includes(" ")) return [];
+    if (!input.startsWith("/")) return [];
     return getUnifiedSuggestions(input, skills);
   }, [input, skills, atMention, workspaceFiles]);
 

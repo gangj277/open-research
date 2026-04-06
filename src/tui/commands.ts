@@ -24,7 +24,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "btw", aliases: ["/aside"], description: "Ask a side question without affecting the main conversation", category: "session" },
   { name: "export", aliases: [], description: "Export conversation as markdown to a file", category: "session" },
   { name: "diff", aliases: ["/changes"], description: "Show files the agent has changed in this session", category: "workspace" },
-  { name: "api-keys", aliases: ["/keys"], description: "Set API keys for Semantic Scholar, OpenAlex (e.g. /api-keys semantic-scholar YOUR_KEY)", category: "system" },
+  { name: "api-keys", aliases: ["/keys"], description: "Set API keys for Semantic Scholar, OpenAlex", category: "system" },
   { name: "doctor", aliases: [], description: "Diagnose auth, connectivity, and tool availability", category: "system" },
   { name: "preview", aliases: [], description: "Live preview a LaTeX file in browser (e.g. /preview papers/draft.tex)", category: "workspace" },
   { name: "memory", aliases: ["/memories"], description: "View or clear stored memories about you", category: "system" },
@@ -65,11 +65,67 @@ export interface WorkspaceFile {
   content: string;
 }
 
+// ── Subcommand Hints ────────────────────────────────────────────────────────
+// When user types a command followed by a space, show contextual arg hints
+
+interface SubcommandHint {
+  name: string;
+  description: string;
+}
+
+const SUBCOMMAND_HINTS: Record<string, SubcommandHint[]> = {
+  "api-keys": [
+    { name: "api-keys semantic-scholar <key>", description: "Set your Semantic Scholar API key" },
+    { name: "api-keys openalex <key>", description: "Set your OpenAlex API key" },
+  ],
+  "config": [
+    { name: "config theme dark|light", description: "Set color theme" },
+    { name: "config auto-approve on|off", description: "Toggle auto-approve mode" },
+  ],
+  "memory": [
+    { name: "memory clear", description: "Clear all global memories" },
+    { name: "memory clear project", description: "Clear project memories" },
+    { name: "memory clear all", description: "Clear everything" },
+    { name: "memory delete <id>", description: "Delete a specific memory" },
+  ],
+  "compact": [
+    { name: "compact", description: "Compress conversation (auto-selects what to keep)" },
+    { name: "compact keep the statistical findings", description: "Compress but prioritize specific content" },
+  ],
+  "export": [
+    { name: "export", description: "Export to conversation-export.md" },
+    { name: "export <filename>", description: "Export to a specific file" },
+  ],
+  "preview": [
+    { name: "preview <path-to-tex>", description: "Live preview a LaTeX file in browser" },
+  ],
+};
+
 export function getUnifiedSuggestions(
   partial: string,
   allSkills: SkillSummary[]
 ): Suggestion[] {
   if (!partial.startsWith("/")) return [];
+
+  // Check for subcommand hints: /api-keys<space>...
+  if (partial.includes(" ")) {
+    const spaceIdx = partial.indexOf(" ");
+    const cmdPart = partial.slice(1, spaceIdx).toLowerCase();
+    const hints = SUBCOMMAND_HINTS[cmdPart];
+    if (hints) {
+      const argPart = partial.slice(spaceIdx + 1).toLowerCase();
+      const filtered = argPart
+        ? hints.filter((h) => h.name.toLowerCase().includes(argPart))
+        : hints;
+      return filtered.map((h) => ({
+        kind: "command" as const,
+        name: h.name,
+        description: h.description,
+      }));
+    }
+    return [];
+  }
+
   const search = partial.slice(1).toLowerCase();
   if (!search) {
     const cmds: Suggestion[] = SLASH_COMMANDS.map((c) => ({

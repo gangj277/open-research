@@ -630,7 +630,7 @@ export function App({
         // Skills
         addSystemMessage(`  Skills: ${skills.length} loaded`);
         // Memory
-        const mems = await loadMemories({ homeDir });
+        const mems = await loadAllMemories({ homeDir });
         addSystemMessage(`  Memories: ${mems.length} stored`);
         // Node
         addSystemMessage(`  Node: ${process.version}`);
@@ -685,7 +685,7 @@ export function App({
           addSystemMessage(deleted ? `Deleted memory ${memId.slice(0, 8)}...` : "Memory not found.");
           break;
         }
-        const mems = await loadMemories({ homeDir });
+        const mems = await loadAllMemories({ homeDir });
         if (mems.length === 0) {
           addSystemMessage("No memories stored yet. I'll learn about you as we talk.");
         } else {

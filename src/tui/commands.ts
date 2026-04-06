@@ -24,6 +24,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "btw", aliases: ["/aside"], description: "Ask a side question without affecting the main conversation", category: "session" },
   { name: "export", aliases: [], description: "Export conversation as markdown to a file", category: "session" },
   { name: "diff", aliases: ["/changes"], description: "Show files the agent has changed in this session", category: "workspace" },
+  { name: "api-keys", aliases: ["/keys"], description: "Set API keys for Semantic Scholar, OpenAlex (e.g. /api-keys semantic-scholar YOUR_KEY)", category: "system" },
   { name: "doctor", aliases: [], description: "Diagnose auth, connectivity, and tool availability", category: "system" },
   { name: "preview", aliases: [], description: "Live preview a LaTeX file in browser (e.g. /preview papers/draft.tex)", category: "workspace" },
   { name: "memory", aliases: ["/memories"], description: "View or clear stored memories about you", category: "system" },

@@ -1,5 +1,6 @@
 import type { WorkspaceContext } from "./state";
 import { discoverScholarlySources } from "@/lib/discovery/scholarly-search";
+import { loadOpenResearchConfig, getSemanticScholarApiKey, getOpenAlexApiKey } from "@/lib/config/store";
 
 export async function executeSearchExternalSources(
   args: {
@@ -14,11 +15,14 @@ export async function executeSearchExternalSources(
   }
   const primary = searches[0]!;
   const variations = searches.slice(1).map((item) => item.query);
+  const config = await loadOpenResearchConfig().catch(() => null);
   const results = await discoverScholarlySources({
     query: primary.query,
     queryVariations: variations,
     numResults: args.num_results ?? 8,
     filters: ctx.searchFilters,
+    semanticScholarApiKey: getSemanticScholarApiKey(config),
+    openAlexApiKey: getOpenAlexApiKey(config),
   });
   const summary = results
     .map((result, index) => `${index + 1}. ${result.title} [${result.provider}] ${result.url}`)

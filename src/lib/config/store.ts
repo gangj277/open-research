@@ -14,6 +14,10 @@ export const openResearchConfigSchema = z.object({
   }),
   theme: z.enum(themeValues).default("dark"),
   lastWorkspace: z.string().nullable(),
+  apiKeys: z.object({
+    semanticScholar: z.string().optional(),
+    openAlex: z.string().optional(),
+  }).optional(),
 });
 
 export type OpenResearchConfig = z.infer<typeof openResearchConfigSchema>;
@@ -27,7 +31,18 @@ export const DEFAULT_OPEN_RESEARCH_CONFIG: OpenResearchConfig = {
   },
   theme: "dark",
   lastWorkspace: null,
+  apiKeys: {},
 };
+
+/** Get the Semantic Scholar API key from config or environment */
+export function getSemanticScholarApiKey(config?: OpenResearchConfig | null): string | undefined {
+  return config?.apiKeys?.semanticScholar || process.env.SEMANTIC_SCHOLAR_API_KEY;
+}
+
+/** Get the OpenAlex API key from config or environment */
+export function getOpenAlexApiKey(config?: OpenResearchConfig | null): string | undefined {
+  return config?.apiKeys?.openAlex || process.env.OPENALEX_API_KEY;
+}
 
 export async function loadOpenResearchConfig(
   options?: PathOptions

@@ -39,6 +39,7 @@ import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-
 import { checkForUpdate } from "@/lib/cli/update-check";
 import { loadAllMemories, deleteMemory, clearMemories } from "@/lib/memory/store";
 import { generateInitialAgentsMd } from "@/lib/workspace/init-agents-md";
+import { getSemanticScholarApiKey, getOpenAlexApiKey } from "@/lib/config/store";
 import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import {
   estimateConversationTokens,
@@ -603,6 +604,46 @@ export function App({
         }
         break;
       }
+      case "api-keys": {
+        if (!args) {
+          const ssKey = getSemanticScholarApiKey(config);
+          const oaKey = getOpenAlexApiKey(config);
+          addSystemMessage("API Keys:");
+          addSystemMessage(`  Semantic Scholar: ${ssKey ? ssKey.slice(0, 8) + "..." : "not set"}`);
+          addSystemMessage(`  OpenAlex: ${oaKey ? oaKey.slice(0, 8) + "..." : "not set"}`);
+          addSystemMessage("");
+          addSystemMessage("Set via CLI:");
+          addSystemMessage("  /api-keys semantic-scholar YOUR_KEY");
+          addSystemMessage("  /api-keys openalex YOUR_KEY");
+          addSystemMessage("");
+          addSystemMessage("Or set environment variables:");
+          addSystemMessage("  export SEMANTIC_SCHOLAR_API_KEY=your_key");
+          addSystemMessage("  export OPENALEX_API_KEY=your_key");
+          break;
+        }
+        const [keyName, ...keyParts] = args.split(/\s+/);
+        const keyValue = keyParts.join("").trim();
+        if (!keyValue) {
+          addSystemMessage("Usage: /api-keys <semantic-scholar|openalex> <key>");
+          break;
+        }
+        if (config) {
+          const apiKeys = config.apiKeys ?? {};
+          if (keyName === "semantic-scholar" || keyName === "ss") {
+            apiKeys.semanticScholar = keyValue;
+          } else if (keyName === "openalex" || keyName === "oa") {
+            apiKeys.openAlex = keyValue;
+          } else {
+            addSystemMessage(`Unknown key: ${keyName}. Use semantic-scholar or openalex.`);
+            break;
+          }
+          const updated = { ...config, apiKeys };
+          setConfig(updated);
+          await saveOpenResearchConfig(updated, { homeDir });
+          addSystemMessage(`${keyName} API key saved.`);
+        }
+        break;
+      }
       case "doctor": {
         addSystemMessage("Running diagnostics...");
         // Auth
@@ -614,6 +655,11 @@ export function App({
         // Skills
         addSystemMessage(`  Skills: ${skills.length} loaded`);
         // Memory
+        // API keys
+        const ssKey = getSemanticScholarApiKey(config);
+        const oaKey = getOpenAlexApiKey(config);
+        addSystemMessage(`  Semantic Scholar API: ${ssKey ? "configured" : "not set (rate-limited)"}`);
+        addSystemMessage(`  OpenAlex API: ${oaKey ? "configured" : "not set (limited)"}`);
         const mems = await loadAllMemories({ homeDir });
         addSystemMessage(`  Memories: ${mems.length} stored`);
         // Node

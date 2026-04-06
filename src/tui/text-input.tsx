@@ -176,12 +176,20 @@ export default function TextInput({
           nextCursor--;
         }
       }
-      // ── Move word left: Option+Left ──
-      else if (key.meta && key.leftArrow) {
+      // ── Move word left: Option+Left or ESC+b or Ctrl+Left ──
+      else if (
+        (key.meta && key.leftArrow) ||
+        (key.meta && input === "b") ||
+        (key.ctrl && key.leftArrow)
+      ) {
         nextCursor = prevWordBoundary(originalValue, cursorOffset);
       }
-      // ── Move word right: Option+Right ──
-      else if (key.meta && key.rightArrow) {
+      // ── Move word right: Option+Right or ESC+f or Ctrl+Right ──
+      else if (
+        (key.meta && key.rightArrow) ||
+        (key.meta && input === "f") ||
+        (key.ctrl && key.rightArrow)
+      ) {
         nextCursor = nextWordBoundary(originalValue, cursorOffset);
       }
       // ── Move to start: Ctrl+A or Home ──

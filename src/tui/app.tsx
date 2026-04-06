@@ -32,6 +32,8 @@ import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { SessionPicker } from "@/tui/session-picker";
 import { getPendingQuestion, clearPendingQuestion, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
 import { initTaskStore, getVisibleTasks, clearAllTasks, type Task } from "@/lib/agent/tools/tasks";
+import { getPackageVersion } from "@/lib/cli/version";
+import { getContextWindow } from "@/lib/agent/context-manager";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
 import { checkForUpdate } from "@/lib/cli/update-check";
 import type { PreviewServer } from "@/lib/preview/server";
@@ -953,6 +955,10 @@ export function App({
               hasWorkspace={hasWorkspace}
               fileCount={workspaceFiles.length}
               skillCount={skills.length}
+              version={getPackageVersion()}
+              model={config?.defaults.model ?? "gpt-5.4"}
+              contextWindow={getContextWindow(config?.defaults.model ?? "gpt-5.4")}
+              workspacePath={workspacePath}
               width={contentWidth}
             />
           )}

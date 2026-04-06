@@ -397,62 +397,74 @@ export function HomeScreen({
   hasWorkspace,
   fileCount,
   skillCount,
+  version,
+  model,
+  contextWindow,
+  workspacePath,
   width,
 }: {
   hasAuth: boolean;
   hasWorkspace: boolean;
   fileCount: number;
   skillCount: number;
+  version: string;
+  model: string;
+  contextWindow: number;
+  workspacePath: string | null;
   width?: number;
 }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
   const bodyWidth = indentedWidth(contentWidth);
+  const ctxLabel = contextWindow >= 1000 ? `${Math.round(contextWindow / 1000)}k` : String(contextWindow);
+  const shortPath = workspacePath
+    ? workspacePath.replace(process.env.HOME ?? "", "~")
+    : process.cwd().replace(process.env.HOME ?? "", "~");
+
   return (
     <Box flexDirection="column" marginBottom={1} width={contentWidth}>
-      <Box flexDirection="column" marginBottom={1} width={contentWidth}>
+      {/* Init banner */}
+      <Box width={contentWidth}>
+        <Text bold color={theme.accent}>{"⚡ "}</Text>
         <Text bold color={theme.accent}>Open Research</Text>
-        <Text color={theme.muted} dimColor>Local-first research agent</Text>
+        <Text color={theme.muted}> v{version}</Text>
+        <Text color={theme.muted} dimColor> | </Text>
+        <Text color={theme.text}>◆ {model}</Text>
+        <Text color={theme.muted} dimColor> | </Text>
+        <Text color={theme.muted}>{ctxLabel} context</Text>
+      </Box>
+      <Box marginLeft={2} width={bodyWidth}>
+        <Text color={theme.muted} dimColor>{shortPath}</Text>
+        {hasWorkspace && (
+          <Text color={theme.muted} dimColor> · {fileCount} files · {skillCount} skills</Text>
+        )}
       </Box>
 
+      {/* Status hints */}
       {!hasAuth && (
-        <Box flexDirection="column" width={contentWidth}>
+        <Box flexDirection="column" marginTop={1} width={contentWidth}>
           <Box width={contentWidth}>
             <Text color={theme.warning}>{GUTTER.pending} </Text>
-            <Text color={theme.warning}>Connect or add OpenAI credentials to get started</Text>
+            <Text color={theme.warning}>Connect OpenAI to get started</Text>
           </Box>
           <Box marginLeft={2} width={bodyWidth}>
-            <Text color={theme.muted} wrap="wrap">/config apikey sk-...  ·  /auth — browser login  ·  /auth-codex — import existing session</Text>
+            <Text color={theme.muted} wrap="wrap">/config apikey sk-...  ·  /auth  ·  /auth-codex</Text>
           </Box>
         </Box>
       )}
 
       {hasAuth && !hasWorkspace && (
-        <Box flexDirection="column" width={contentWidth}>
-          <Box width={contentWidth}>
-            <Text color={theme.secondary}>{GUTTER.success} </Text>
-            <Text color={theme.secondary}>Connected</Text>
-          </Box>
+        <Box flexDirection="column" marginTop={1} width={contentWidth}>
           <Box width={contentWidth}>
             <Text color={theme.warning}>{GUTTER.pending} </Text>
-            <Text color={theme.warning}>Create a workspace to begin</Text>
-          </Box>
-          <Box marginLeft={2} width={bodyWidth}>
-            <Text color={theme.muted} wrap="wrap">/init — initialize in current directory</Text>
+            <Text color={theme.warning}>Run /init to create a workspace</Text>
           </Box>
         </Box>
       )}
 
       {hasAuth && hasWorkspace && (
-        <Box flexDirection="column" width={contentWidth}>
-          <Box width={contentWidth}>
-            <Text color={theme.secondary}>{GUTTER.active} </Text>
-            <Text color={theme.secondary}>Ready</Text>
-            <Text color={theme.muted} dimColor> — {fileCount} files · {skillCount} skills</Text>
-          </Box>
-          <Box marginLeft={2} width={bodyWidth}>
-            <Text color={theme.muted} wrap="wrap">Ask a question, @mention a file, or /help for commands</Text>
-          </Box>
+        <Box marginTop={1} width={contentWidth}>
+          <Text color={theme.muted} dimColor>Ask a question, @mention a file, or type /help</Text>
         </Box>
       )}
     </Box>

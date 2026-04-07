@@ -113,6 +113,8 @@ export function App({
   const [statusLine, setStatusLine] = useState("");
   const [activeToolActivities, setActiveToolActivities] = useState<Record<string, string>>({});
   const [turnToolCount, setTurnToolCount] = useState(0);
+  const [latchedToolActivity, setLatchedToolActivity] = useState("");
+  const [latchedToolCount, setLatchedToolCount] = useState(0);
   const [subAgentProgress, setSubAgentProgress] = useState<Record<string, SubAgentProgress>>({});
   const [toolActivityExpanded, setToolActivityExpanded] = useState(false);
   const [taskPanelVisible, setTaskPanelVisible] = useState(true);
@@ -184,6 +186,20 @@ export function App({
 
     return `Running ${activeToolDescriptions.length} tools in parallel`;
   }, [activeToolDescriptions, turnToolCount]);
+  useEffect(() => {
+    if (!busy) {
+      setLatchedToolActivity("");
+      setLatchedToolCount(0);
+      return;
+    }
+
+    if (!currentToolActivity) {
+      return;
+    }
+
+    setLatchedToolActivity(currentToolActivity);
+    setLatchedToolCount(turnToolCount);
+  }, [busy, currentToolActivity, turnToolCount]);
   const visibleSubAgents = useMemo(
     () => Object.values(subAgentProgress),
     [subAgentProgress],
@@ -512,7 +528,6 @@ export function App({
         clearCtrlCPending();
         if (abortRef.current) {
           abortRef.current.abort();
-          addSystemMessage("Interrupting agent...");
         }
         return;
       }
@@ -560,7 +575,6 @@ export function App({
     if (inputKey.escape) {
       if (busy && abortRef.current) {
         abortRef.current.abort();
-        addSystemMessage("Interrupting agent...");
       } else if (planningState.status === "charter-review") {
         rejectCharter();
       } else {
@@ -653,11 +667,14 @@ export function App({
     if (!workspacePath) return;
     turnToolLogRef.current = [];
     setTurnToolCount(0);
+    setLatchedToolActivity("");
+    setLatchedToolCount(0);
     setActiveToolActivities({});
     setSubAgentProgress({});
     const controller = new AbortController();
     let streamBuffer: ReturnType<typeof createSentenceStreamBuffer> | null = null;
     let focusPendingReviewOnComplete = false;
+    const postTurnNotices: string[] = [];
     abortRef.current = controller;
     setBusy(true);
     startTransition(() => {
@@ -693,6 +710,8 @@ export function App({
         onTextDelta: (chunk) => {
           assistantText += chunk;
           streamBuffer?.push(chunk);
+          setLatchedToolActivity("");
+          setLatchedToolCount(0);
         },
         onToolActivity: (activity) => {
           streamBuffer?.flush();
@@ -753,7 +772,9 @@ export function App({
 
       if (turnToolLogRef.current.length > 0) {
         const summary = buildToolSummary(turnToolLogRef.current);
-        addSystemMessage(`__tool_summary__${JSON.stringify({ summary, tools: turnToolLogRef.current })}`);
+        postTurnNotices.push(
+          `__tool_summary__${JSON.stringify({ summary, tools: turnToolLogRef.current })}`
+        );
         turnToolLogRef.current = [];
       }
 
@@ -822,7 +843,13 @@ export function App({
       setBusy(false);
       setComposerFocused(!focusPendingReviewOnComplete);
       if (controller.signal.aborted) {
-        addSystemMessage("Agent interrupted.");
+        postTurnNotices.push("Interrupting agent...\nAgent interrupted.");
+      }
+      for (const notice of postTurnNotices) {
+        addSystemMessage(notice);
+      }
+      if (controller.signal.aborted) {
+        return;
       }
     }
   }
@@ -1185,8 +1212,8 @@ export function App({
             width={contentWidth}
             busy={busy}
             frame={activityFrame}
-            toolActivity={currentToolActivity}
-            toolCount={turnToolCount}
+            toolActivity={currentToolActivity || latchedToolActivity}
+            toolCount={currentToolActivity ? turnToolCount : latchedToolCount}
             statusParts={statusParts}
             statusColor={statusColor}
             tokenDisplay={tokenDisplay}

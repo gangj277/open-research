@@ -77,4 +77,17 @@ describe("streaming helpers", () => {
       dynamicMessages: [messages[2]],
     });
   });
+
+  test("keeps the latest system notice dynamic while idle", () => {
+    const messages = [
+      { role: "user" as const, text: "Question" },
+      { role: "assistant" as const, text: "Finished answer" },
+      { role: "system" as const, text: "Agent interrupted." },
+    ];
+
+    expect(splitMessagesForRender(messages, false)).toEqual({
+      staticMessages: messages.slice(0, -1),
+      dynamicMessages: [messages[2]],
+    });
+  });
 });

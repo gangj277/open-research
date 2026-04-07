@@ -6,10 +6,6 @@ export type ConversationMessage = {
 export const STREAM_FLUSH_PATTERN = /[.!?]\s|\n|^#{1,3}\s|^[-*]\s/m;
 export const STREAM_FLUSH_INTERVAL_MS = 80;
 
-function isToolSummaryMessage(message: ConversationMessage | undefined): boolean {
-  return message?.role === "system" && message.text.startsWith("__tool_summary__");
-}
-
 export function splitMessagesForRender(
   messages: ConversationMessage[],
   busy: boolean,
@@ -26,7 +22,7 @@ export function splitMessagesForRender(
 
   const last = messages[messages.length - 1];
 
-  if (last && (last.role === "assistant" ? busy : isToolSummaryMessage(last))) {
+  if (last && (last.role === "assistant" ? busy : !busy && last.role === "system")) {
     return {
       staticMessages: messages.slice(0, -1),
       dynamicMessages: [last],

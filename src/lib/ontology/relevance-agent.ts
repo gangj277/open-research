@@ -1,4 +1,5 @@
 import type { LLMProvider } from "@/lib/llm/provider";
+import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 import type { Ontology, Note } from "./types";
 
 // ── Pre-filter ─────────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ export async function runRelevanceAgent(input: {
           content: `## User's message\n${userMessage}\n\n## Notes in ontology\n${noteList}`,
         },
       ],
-      model: "gpt-5.4-mini",
+      model: getProviderCatalog(input.provider.kind).backgroundModel,
       maxTokens: 500,
       temperature: 0,
     });

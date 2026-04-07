@@ -1,4 +1,5 @@
 import type { LLMProvider } from "@/lib/llm/provider";
+import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +92,7 @@ export async function extractWithTarget(
         { role: "system", content: systemPrompt },
         { role: "user", content: truncatedContent },
       ],
-      model: "gpt-5.4-mini",
+      model: getProviderCatalog(provider.kind).backgroundModel,
       temperature: 0,
       maxTokens: 1500,
       jsonSchema: EXTRACTION_SCHEMA,

@@ -95,6 +95,23 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       }
       break;
     }
+    case "auth-gemini": {
+      addSystemMessage("Opening browser for Google login...");
+      addSystemMessage("Note: Uses Gemini CLI credentials. Google may restrict third-party use.");
+      setBusy(true);
+      try {
+        const { loginWithGemini } = await import("@/lib/auth/gemini-login");
+        const result = await loginWithGemini({ homeDir });
+        setAuthStatus("connected");
+        addSystemMessage(`Connected Google account ${result.tokens.email}`);
+        addSystemMessage("Switch to Gemini: /config provider gemini");
+      } catch (err) {
+        addSystemMessage(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+      break;
+    }
     case "auth-codex": {
       addSystemMessage("Importing Codex CLI auth...");
       setBusy(true);

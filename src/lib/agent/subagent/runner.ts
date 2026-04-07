@@ -6,6 +6,7 @@ import type { SubAgentConfig, SubAgentResult, SubAgentProgress } from "./types";
 import { TOOL_SCHEMAS } from "../tool-schemas";
 import { executeTool } from "../tool-dispatcher";
 import { getSubAgentConfig } from "./configs";
+import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 
 // ── Sub-Agent Runner ───────────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ export async function runSubAgent(input: {
     for await (const chunk of input.provider.callLLMStreaming({
       messages,
       tools,
-      model: config.model,
+      model: config.model ?? getProviderCatalog(input.provider.kind).backgroundModel,
       reasoningEffort: config.reasoningEffort,
       signal: input.signal,
     })) {
@@ -164,7 +165,7 @@ export async function runSubAgent(input: {
     let finalText = "";
     for await (const chunk of input.provider.callLLMStreaming({
       messages,
-      model: config.model,
+      model: config.model ?? getProviderCatalog(input.provider.kind).backgroundModel,
       reasoningEffort: config.reasoningEffort,
       signal: input.signal,
     })) {

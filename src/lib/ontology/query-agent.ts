@@ -1,4 +1,5 @@
 import type { LLMProvider } from "@/lib/llm/provider";
+import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 import type { LLMMessage } from "@/lib/llm/types";
 import type { Ontology } from "./types";
 import { loadOntology } from "./store";
@@ -171,7 +172,7 @@ export async function runQueryAgent(input: {
     for await (const chunk of input.provider.callLLMStreaming({
       messages,
       tools: QUERY_TOOLS,
-      model: "gpt-5.4-mini",
+      model: getProviderCatalog(input.provider.kind).backgroundModel,
     })) {
       if (chunk.type === "text_delta") {
         fullText += chunk.content;
@@ -218,7 +219,7 @@ export async function runQueryAgent(input: {
   let finalText = "";
   for await (const chunk of input.provider.callLLMStreaming({
     messages,
-    model: "gpt-5.4-mini",
+    model: getProviderCatalog(input.provider.kind).backgroundModel,
   })) {
     if (chunk.type === "text_delta") finalText += chunk.content;
   }

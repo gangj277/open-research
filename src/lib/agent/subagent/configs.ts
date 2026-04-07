@@ -7,7 +7,7 @@ import type { SubAgentConfig } from "./types";
 const exploreConfig: SubAgentConfig = {
   id: "explore",
   name: "Explore",
-  model: "gpt-5.4-mini",
+  model: undefined, // Resolved at runtime from provider catalog (backgroundModel)
   reasoningEffort: "high",
   allowedTools: new Set([
     "read_file",

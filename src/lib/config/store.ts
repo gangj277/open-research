@@ -5,7 +5,14 @@ import { readJsonFile, writeJsonFile } from "@/lib/fs/json";
 export const themeValues = ["dark", "light"] as const;
 export type Theme = (typeof themeValues)[number];
 
+export const providerValues = ["openai", "gemini"] as const;
+export type ActiveProvider = (typeof providerValues)[number];
+
 const openAIProviderConfigSchema = z.object({
+  apiKey: z.string().optional(),
+}).optional();
+
+const geminiProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
 }).optional();
 
@@ -17,15 +24,18 @@ export const openResearchConfigSchema = z.object({
     editPolicy: z.literal("mixed"),
   }),
   theme: z.enum(themeValues).default("dark"),
+  activeProvider: z.enum(providerValues).default("openai"),
   lastWorkspace: z.string().nullable(),
   providers: z.object({
     openai: openAIProviderConfigSchema,
+    gemini: geminiProviderConfigSchema,
   }).optional(),
   apiKeys: z.object({
     openai: z.string().optional(),
     semanticScholar: z.string().optional(),
     openAlex: z.string().optional(),
     brave: z.string().optional(),
+    gemini: z.string().optional(),
   }).optional(),
 });
 
@@ -39,9 +49,11 @@ export const DEFAULT_OPEN_RESEARCH_CONFIG: OpenResearchConfig = {
     editPolicy: "mixed",
   },
   theme: "dark",
+  activeProvider: "openai",
   lastWorkspace: null,
   providers: {
     openai: {},
+    gemini: {},
   },
   apiKeys: {},
 };
@@ -66,6 +78,11 @@ export function getOpenAlexApiKey(config?: OpenResearchConfig | null): string | 
 /** Get the Brave Search API key from config or environment */
 export function getBraveApiKey(config?: OpenResearchConfig | null): string | undefined {
   return config?.apiKeys?.brave || process.env.BRAVE_API_KEY;
+}
+
+/** Get the Gemini API key from config or environment */
+export function getConfiguredGeminiApiKey(config?: OpenResearchConfig | null): string | undefined {
+  return config?.providers?.gemini?.apiKey || config?.apiKeys?.gemini || process.env.GEMINI_API_KEY;
 }
 
 export async function loadOpenResearchConfig(

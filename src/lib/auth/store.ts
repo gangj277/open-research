@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import {
   getOpenResearchAuthFile,
+  getOpenResearchGeminiAuthFile,
   getOpenResearchRoot,
   type PathOptions,
 } from "@/lib/fs/paths";
@@ -35,5 +36,45 @@ export async function loadStoredAuth(
 
 export async function clearStoredAuth(options?: PathOptions): Promise<void> {
   const authFile = getOpenResearchAuthFile(options);
+  await fs.rm(authFile, { force: true });
+}
+
+// ── Gemini Auth ────────────────────────────────────────────────────────────
+
+export interface GeminiAuthTokens {
+  access: string;
+  refresh: string;
+  expires: number;
+  email: string;
+  projectId: string;
+}
+
+export interface StoredGeminiAuth {
+  provider: "gemini_auth";
+  tokens: GeminiAuthTokens;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function saveGeminiAuth(
+  auth: StoredGeminiAuth,
+  options?: PathOptions,
+): Promise<string> {
+  await ensureCliHome(options);
+  const authFile = getOpenResearchGeminiAuthFile(options);
+  await writeJsonFile(authFile, auth, AUTH_FILE_MODE);
+  await fs.chmod(authFile, AUTH_FILE_MODE);
+  return authFile;
+}
+
+export async function loadGeminiAuth(
+  options?: PathOptions,
+): Promise<StoredGeminiAuth | null> {
+  const authFile = getOpenResearchGeminiAuthFile(options);
+  return readJsonFile<StoredGeminiAuth | null>(authFile, null);
+}
+
+export async function clearGeminiAuth(options?: PathOptions): Promise<void> {
+  const authFile = getOpenResearchGeminiAuthFile(options);
   await fs.rm(authFile, { force: true });
 }

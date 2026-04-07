@@ -53,6 +53,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-5.4-mini": 128_000,
   "o3": 200_000,
   "o4-mini": 200_000,
+  "gemini-3.1-pro-preview": 1_048_576,
+  "gemini-3-flash-preview": 1_048_576,
 };
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;

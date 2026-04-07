@@ -27,8 +27,24 @@ const OPENAI_CATALOG: ProviderCatalog = {
   backgroundModel: "gpt-5.4-mini",
 };
 
+export const GEMINI_PROVIDER_MODELS = [
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
+] as const;
+
+const GEMINI_CATALOG: ProviderCatalog = {
+  family: "gemini",
+  displayName: "Gemini",
+  models: GEMINI_PROVIDER_MODELS,
+  defaultModel: "gemini-3.1-pro-preview",
+  backgroundModel: "gemini-3-flash-preview",
+};
+
 export function getProviderCatalog(providerKind?: string): ProviderCatalog {
   switch (providerKind) {
+    case "gemini_auth":
+    case "gemini_api_key":
+      return GEMINI_CATALOG;
     case "openai_auth":
     case "openai_api_key":
     default:
@@ -63,7 +79,7 @@ export function selectModelForTask(
     case "conversation":
       return selected;
     case "compaction":
-      return selected.includes("5.4") ? catalog.backgroundModel : selected;
+      return (selected.includes("5.4") || selected.includes("pro")) ? catalog.backgroundModel : selected;
     case "memory":
     case "workspace":
       return catalog.backgroundModel;

@@ -17,6 +17,10 @@ export function getOpenResearchAuthFile(options?: PathOptions): string {
   return path.join(getOpenResearchRoot(options), "auth.json");
 }
 
+export function getOpenResearchGeminiAuthFile(options?: PathOptions): string {
+  return path.join(getOpenResearchRoot(options), "gemini-auth.json");
+}
+
 export function getOpenResearchConfigFile(options?: PathOptions): string {
   return path.join(getOpenResearchRoot(options), "config.json");
 }

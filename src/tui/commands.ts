@@ -9,6 +9,7 @@ export interface SlashCommand {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "auth", aliases: ["/connect", "/login"], description: "Connect your OpenAI account via browser OAuth", category: "auth" },
+  { name: "auth-gemini", aliases: ["/login-gemini", "/gemini"], description: "Connect your Google account via browser OAuth (Gemini)", category: "auth" },
   { name: "auth-codex", aliases: ["/import-codex"], description: "Import auth from existing Codex CLI", category: "auth" },
   { name: "auth-status", aliases: [], description: "Check auth connection status", category: "auth" },
   { name: "logout", aliases: [], description: "Clear stored auth", category: "auth" },

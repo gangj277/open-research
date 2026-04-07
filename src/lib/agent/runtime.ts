@@ -19,7 +19,7 @@ import { loadAllMemories, selectRelevantMemories, formatMemoriesForPrompt } from
 import { extractAndStoreMemories } from "@/lib/memory/extractor";
 import { readAgentsMd, maybeUpdateAgentsMd } from "@/lib/workspace/agents-md";
 import { getTaskContextBlock } from "@/lib/agent/tools/tasks";
-import { selectModelForTask } from "@/lib/llm/provider-catalog";
+import { selectModelForTask, getProviderCatalog } from "@/lib/llm/provider-catalog";
 
 // ── Tool Activity Event ─────────────────────────────────────────────────────
 
@@ -245,7 +245,7 @@ export async function runAgentTurn(input: {
     ? buildPlanningSystemPrompt(input.workspace, activeSkills)
     : buildSystemPrompt(input.workspace, activeSkills);
 
-  const model = input.model ?? "gpt-5.4";
+  const model = input.model ?? getProviderCatalog(input.provider.kind).defaultModel;
   const usage = input.sessionUsage ?? createSessionUsage();
 
   // Load memories (global + project), select only relevant ones based on query

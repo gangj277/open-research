@@ -8,8 +8,8 @@ export interface SubAgentConfig {
   id: string;
   /** Human-readable name for logging/display */
   name: string;
-  /** Model to use (e.g. "gpt-5.4-mini") */
-  model: string;
+  /** Model to use. If undefined, resolved from provider catalog (backgroundModel). */
+  model?: string;
   /** Reasoning effort level */
   reasoningEffort: ReasoningEffort;
   /** Which tools this agent type can access (by name) */

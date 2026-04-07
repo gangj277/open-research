@@ -1,4 +1,5 @@
 import type { LLMProvider } from "@/lib/llm/provider";
+import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 import type { LLMMessage } from "@/lib/llm/types";
 import type { Ontology } from "./types";
 import { loadOntology, saveOntology } from "./store";
@@ -459,7 +460,7 @@ export async function runOntologyManager(input: {
     for await (const chunk of input.provider.callLLMStreaming({
       messages,
       tools: MANAGER_TOOLS,
-      model: "gpt-5.4",
+      model: getProviderCatalog(input.provider.kind).defaultModel,
     })) {
       if (chunk.type === "text_delta") {
         fullText += chunk.content;

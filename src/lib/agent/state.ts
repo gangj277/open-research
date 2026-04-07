@@ -13,6 +13,8 @@ export interface ProposedUpdate {
   folder?: string;
   content: string;
   summary: string;
+  /** Original file content before the edit (only present for type "edit") */
+  oldContent?: string;
 }
 
 // ── Ask User (pause-and-resume questions) ──

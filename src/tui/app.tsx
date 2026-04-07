@@ -43,6 +43,7 @@ import {
   matchSlashCommand,
   getUnifiedSuggestions,
   extractAtMention,
+  extractSlashTrigger,
   getFileSuggestions,
   truncate,
   type Suggestion,
@@ -58,12 +59,13 @@ import {
   PromptPrefix,
   FooterBar,
   TaskPanel,
+  ThinkingIndicator,
   type SuggestionItem,
 } from "@/tui/components";
 import {
   createSentenceStreamBuffer,
-  splitMessagesForRender,
   type ConversationMessage,
+  splitMessagesForRender,
 } from "@/tui/streaming";
 import { insetWidth } from "@/tui/layout";
 
@@ -73,7 +75,7 @@ import { useTerminalWidth } from "@/tui/hooks/use-terminal-width";
 import { executeSlashCommand, type SlashCommandContext } from "@/tui/hooks/use-slash-commands";
 import { buildToolSummary } from "@/tui/helpers/tool-summary";
 import { parseCharterYaml } from "@/tui/helpers/charter";
-import { renderConversationMessage } from "@/tui/helpers/render-message";
+import { renderConversationMessages } from "@/tui/helpers/render-message";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -103,16 +105,15 @@ export function App({
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [messageRenderVersion, setMessageRenderVersion] = useState(0);
   const [history, setHistory] = useState<LLMMessage[]>([]);
   const [activeSkills, setActiveSkills] = useState<
     Array<{ id: string; name: string; description: string; prompt: string; skillDir: string }>
   >([]);
   const [pendingUpdates, setPendingUpdates] = useState(initialState.pendingUpdates);
   const [statusLine, setStatusLine] = useState("");
-  const [currentToolActivity, setCurrentToolActivity] = useState<string>("");
+  const [activeToolActivities, setActiveToolActivities] = useState<Record<string, string>>({});
   const [turnToolCount, setTurnToolCount] = useState(0);
-  const [subAgentProgress, setSubAgentProgress] = useState<SubAgentProgress | null>(null);
+  const [subAgentProgress, setSubAgentProgress] = useState<Record<string, SubAgentProgress>>({});
   const [toolActivityExpanded, setToolActivityExpanded] = useState(false);
   const [taskPanelVisible, setTaskPanelVisible] = useState(true);
   const [taskVersion, setTaskVersion] = useState(0);
@@ -128,12 +129,14 @@ export function App({
   const [theme, setTheme] = useState<Theme>("dark");
   const [config, setConfig] = useState<OpenResearchConfig | null>(null);
   const [cursorToEnd, setCursorToEnd] = useState(0);
+  const [messageRenderVersion, setMessageRenderVersion] = useState(0);
   const [screen, setScreen] = useState<"main" | "config" | "resume">("main");
   const [resumeSessions, setResumeSessions] = useState<import("@/lib/workspace/sessions").SavedSession[]>([]);
   const [ctrlCPending, setCtrlCPending] = useState(false);
   const sessionId = useMemo(() => crypto.randomUUID(), []);
-  const deferredMessages = useDeferredValue(messages);
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
+  const visiblePendingUpdates =
+    deferredPendingUpdates.length > 0 ? deferredPendingUpdates : pendingUpdates;
   const activityFrame = useAnimatedFrame(busy);
   const terminalWidth = useTerminalWidth();
   const contentWidth = insetWidth(terminalWidth, 2);
@@ -144,10 +147,46 @@ export function App({
   const previewRef = useRef<PreviewServer | null>(null);
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isHome = deferredMessages.length === 0 && !busy;
+  const isHome = messages.length === 0 && !busy;
   const { staticMessages, dynamicMessages } = useMemo(
-    () => splitMessagesForRender(deferredMessages, busy),
-    [busy, deferredMessages],
+    () => splitMessagesForRender(messages, busy),
+    [busy, messages],
+  );
+  const staticRenderItems = useMemo(
+    () => renderConversationMessages(staticMessages, toolActivityExpanded, contentWidth),
+    [contentWidth, staticMessages, toolActivityExpanded],
+  );
+  const dynamicRenderItems = useMemo(
+    () => renderConversationMessages(dynamicMessages, toolActivityExpanded, contentWidth),
+    [contentWidth, dynamicMessages, toolActivityExpanded],
+  );
+  // Show thinking indicator when busy and agent hasn't started streaming text yet
+  const showThinking = busy && (
+    messages.length === 0 ||
+    messages[messages.length - 1]?.role !== "assistant"
+  );
+  const activeToolDescriptions = useMemo(
+    () => Object.values(activeToolActivities),
+    [activeToolActivities],
+  );
+  const currentToolActivity = useMemo(() => {
+    if (activeToolDescriptions.length === 0) {
+      return "";
+    }
+
+    if (activeToolDescriptions.length === 1 && turnToolCount === 0) {
+      return activeToolDescriptions[0] ?? "";
+    }
+
+    if (activeToolDescriptions.length === 1) {
+      return "Running 1 tool";
+    }
+
+    return `Running ${activeToolDescriptions.length} tools in parallel`;
+  }, [activeToolDescriptions, turnToolCount]);
+  const visibleSubAgents = useMemo(
+    () => Object.values(subAgentProgress),
+    [subAgentProgress],
   );
   const hasWorkspace = workspacePath !== null;
   const hasAuth = authStatus === "connected";
@@ -162,7 +201,8 @@ export function App({
       const pending = getPendingQuestion();
       if (pending && (!agentQuestion || pending.question.id !== agentQuestion.question.id)) {
         setAgentQuestion(pending);
-        setComposerFocused(true);
+        // Defocus text input — QuestionCard handles all interaction (selection + custom typing)
+        setComposerFocused(false);
       }
     }, 200);
     return () => clearInterval(interval);
@@ -227,14 +267,15 @@ export function App({
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
 
   const atMention = useMemo(() => extractAtMention(input), [input]);
+  const slashTrigger = useMemo(() => extractSlashTrigger(input), [input]);
 
   const suggestions = useMemo((): Suggestion[] => {
     if (atMention) {
       return getFileSuggestions(atMention.partial, workspaceFiles);
     }
-    if (!input.startsWith("/")) return [];
-    return getUnifiedSuggestions(input, skills);
-  }, [input, skills, atMention, workspaceFiles]);
+    if (!slashTrigger) return [];
+    return getUnifiedSuggestions(`/${slashTrigger.partial}`, skills);
+  }, [input, skills, atMention, slashTrigger, workspaceFiles]);
 
   useEffect(() => {
     setSelectedSuggestion(-1);
@@ -246,8 +287,9 @@ export function App({
     if (s.kind === "file" && atMention) {
       const before = input.slice(0, atMention.start);
       setInput(`${before}@${s.path} `);
-    } else if (s.kind === "command" || s.kind === "skill") {
-      setInput(`/${s.name}`);
+    } else if ((s.kind === "command" || s.kind === "skill") && slashTrigger) {
+      const before = input.slice(0, slashTrigger.start);
+      setInput(`${before}/${s.name}`);
     }
     setSelectedSuggestion(-1);
     setCursorToEnd((c) => c + 1);
@@ -313,10 +355,8 @@ export function App({
   }
 
   function replaceMessages(nextMessages: ConversationMessage[]) {
-    startTransition(() => {
-      setMessageRenderVersion((current) => current + 1);
-      setMessages(nextMessages);
-    });
+    setMessages(nextMessages);
+    setMessageRenderVersion((current) => current + 1);
   }
 
   // ── Slash command context ──────────────────────────────────────────────
@@ -360,6 +400,20 @@ export function App({
     startTransition(() => {
       setPendingUpdates(rest);
       addSystemMessage(`Rejected: ${next.summary}`);
+    });
+  }
+
+  function feedbackOnPendingUpdate(feedback: string) {
+    if (pendingUpdates.length === 0 || !workspacePath) return;
+    const [next, ...rest] = pendingUpdates;
+    void appendSessionEvent(workspacePath!, sessionId, {
+      type: "update.rejected",
+      timestamp: new Date().toISOString(),
+      payload: { key: next.key, summary: next.summary, feedback },
+    });
+    startTransition(() => {
+      setPendingUpdates(rest);
+      addSystemMessage(`Feedback on "${next.summary}": ${feedback}`);
     });
   }
 
@@ -524,8 +578,8 @@ export function App({
           return;
         }
       }
-      if (key === "a" && pendingUpdates.length > 0) { void acceptNextPendingUpdate(); return; }
-      if (key === "r" && pendingUpdates.length > 0) { rejectNextPendingUpdate(); return; }
+      // When PendingUpdateCard or QuestionCard is active, let them handle all input
+      if ((pendingUpdates.length > 0 && !agentQuestion) || agentQuestion) return;
       if (key === "i" || (key.length === 1 && !inputKey.ctrl && !inputKey.meta && !inputKey.tab)) {
         setComposerFocused(true);
         if (key !== "i") setInput((c) => c + key);
@@ -542,26 +596,12 @@ export function App({
     const trimmed = value.trim();
     if (!trimmed) return;
 
-    if (agentQuestion) {
-      const options = agentQuestion.question.options;
-      const numChoice = parseInt(trimmed, 10);
-      if (!isNaN(numChoice) && numChoice >= 1 && numChoice <= options.length) {
-        const picked = options[numChoice - 1];
-        addSystemMessage(`> ${picked.label}`);
-        agentQuestion.resolve({ questionId: agentQuestion.question.id, answer: picked.label, isCustom: false });
-      } else {
-        addSystemMessage(`> ${trimmed}`);
-        agentQuestion.resolve({ questionId: agentQuestion.question.id, answer: trimmed, isCustom: true });
-      }
-      clearPendingQuestion();
-      setAgentQuestion(null);
-      setInput("");
-      return;
-    }
+    // Questions are now handled entirely by QuestionCard's internal UI
+    if (agentQuestion) return;
 
     if (busy) return;
 
-    if (trimmed.startsWith("/") && !trimmed.includes(" ") && applyAutocomplete()) {
+    if (dropdownVisible && applyAutocomplete()) {
       return;
     }
 
@@ -613,9 +653,11 @@ export function App({
     if (!workspacePath) return;
     turnToolLogRef.current = [];
     setTurnToolCount(0);
-    setSubAgentProgress(null);
+    setActiveToolActivities({});
+    setSubAgentProgress({});
     const controller = new AbortController();
     let streamBuffer: ReturnType<typeof createSentenceStreamBuffer> | null = null;
+    let focusPendingReviewOnComplete = false;
     abortRef.current = controller;
     setBusy(true);
     startTransition(() => {
@@ -655,9 +697,16 @@ export function App({
         onToolActivity: (activity) => {
           streamBuffer?.flush();
           if (activity.type === "tool_start") {
-            setCurrentToolActivity(activity.description ?? activity.name);
+            setActiveToolActivities((current) => ({
+              ...current,
+              [activity.toolCallId]: activity.description ?? activity.name,
+            }));
           } else {
-            setCurrentToolActivity("");
+            setActiveToolActivities((current) => {
+              const next = { ...current };
+              delete next[activity.toolCallId];
+              return next;
+            });
             turnToolLogRef.current.push({
               name: activity.name,
               description: activity.description ?? activity.name,
@@ -672,9 +721,16 @@ export function App({
         },
         onSubAgentProgress: (progress) => {
           if (progress.status === "done") {
-            setSubAgentProgress(null);
+            setSubAgentProgress((current) => {
+              const next = { ...current };
+              delete next[progress.agentId];
+              return next;
+            });
           } else {
-            setSubAgentProgress({ ...progress });
+            setSubAgentProgress((current) => ({
+              ...current,
+              [progress.agentId]: { ...progress },
+            }));
           }
         },
         onMemoryExtracted: (mems) => {
@@ -725,7 +781,8 @@ export function App({
       }
 
       if (reviewRequired.length > 0) {
-        startTransition(() => setPendingUpdates((c) => [...c, ...reviewRequired]));
+        focusPendingReviewOnComplete = true;
+        setPendingUpdates((current) => [...current, ...reviewRequired]);
       }
 
       await appendSessionEvent(workspacePath, sessionId, {
@@ -760,8 +817,10 @@ export function App({
     } finally {
       streamBuffer?.dispose();
       abortRef.current = null;
+      setActiveToolActivities({});
+      setSubAgentProgress({});
       setBusy(false);
-      setComposerFocused(true);
+      setComposerFocused(!focusPendingReviewOnComplete);
       if (controller.signal.aborted) {
         addSystemMessage("Agent interrupted.");
       }
@@ -877,7 +936,7 @@ export function App({
   else statusParts.push("no workspace");
   if (skills.length > 0) statusParts.push(`${skills.length} skills`);
   statusParts.push(agentMode);
-  if (deferredPendingUpdates.length > 0) statusParts.push(`${deferredPendingUpdates.length} pending`);
+  if (pendingUpdates.length > 0) statusParts.push(`${pendingUpdates.length} pending`);
 
   const themeColors = getThemeColors(theme);
   const statusColor = busy
@@ -886,7 +945,7 @@ export function App({
       ? themeColors.warning
       : !hasAuth
         ? themeColors.error
-        : deferredPendingUpdates.length > 0
+        : pendingUpdates.length > 0
           ? themeColors.pending
           : themeColors.secondary;
 
@@ -923,16 +982,13 @@ export function App({
   return (
     <ThemeProvider theme={theme}>
       {screen === "resume" ? (
-        <SessionPicker
+          <SessionPicker
           sessions={resumeSessions}
           onSelect={async (session) => {
             try {
               const restored = await loadSessionHistory(workspacePath!, session.id);
-              startTransition(() => {
-                setMessageRenderVersion((current) => current + 1);
-                setMessages(restored.messages);
-                setHistory(restored.llmHistory);
-              });
+              replaceMessages(restored.messages);
+              startTransition(() => setHistory(restored.llmHistory));
               addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);
             } catch (err) {
               addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -963,27 +1019,40 @@ export function App({
             />
           )}
 
-          {deferredMessages.length > 0 && (
-            <Box flexDirection="column" marginBottom={1} width={contentWidth}>
-              <Static key={`conversation-static-${messageRenderVersion}-${toolActivityExpanded ? "e" : "c"}`} items={staticMessages}>
-                {(message, idx) => renderConversationMessage(message, `static-msg-${idx}`, toolActivityExpanded, contentWidth)}
-              </Static>
-              {dynamicMessages.map((message, idx) =>
-                renderConversationMessage(message, `dynamic-msg-${staticMessages.length + idx}`, toolActivityExpanded, contentWidth),
+          {staticRenderItems.length > 0 && (
+            <Static
+              key={`conversation-static-${messageRenderVersion}`}
+              items={staticRenderItems}
+            >
+              {(item, index) => (
+                <React.Fragment key={`conversation-static-item-${messageRenderVersion}-${index}`}>
+                  {item}
+                </React.Fragment>
               )}
+            </Static>
+          )}
+
+          {dynamicRenderItems.length > 0 && (
+            <Box flexDirection="column" marginBottom={1} width={contentWidth}>
+              {dynamicRenderItems}
             </Box>
           )}
 
-          {subAgentProgress && (
+          {showThinking && (
+            <ThinkingIndicator frame={activityFrame} width={contentWidth} />
+          )}
+
+          {visibleSubAgents.map((progress) => (
             <SubAgentIndicator
-              agentType={subAgentProgress.agentType}
-              goal={subAgentProgress.goal}
-              currentTool={subAgentProgress.currentTool}
-              toolCount={subAgentProgress.toolCount}
+              key={progress.agentId}
+              agentType={progress.agentType}
+              goal={progress.goal}
+              currentTool={progress.currentTool}
+              toolCount={progress.toolCount}
               frame={activityFrame}
               width={contentWidth}
             />
-          )}
+          ))}
 
           {taskPanelVisible && getVisibleTasks().length > 0 && (
             <TaskPanel
@@ -993,10 +1062,27 @@ export function App({
             />
           )}
 
-          {deferredPendingUpdates.length > 0 && (
+          {visiblePendingUpdates.length > 0 && (
             <PendingUpdateCard
-              count={deferredPendingUpdates.length}
-              summary={truncate(deferredPendingUpdates[0].summary, Math.max(24, insetWidth(contentWidth, 8)))}
+              count={pendingUpdates.length}
+              summary={truncate(visiblePendingUpdates[0].summary, Math.max(24, insetWidth(contentWidth, 8)))}
+              fileName={visiblePendingUpdates[0].key}
+              updateType={visiblePendingUpdates[0].type}
+              oldContent={visiblePendingUpdates[0].oldContent}
+              newContent={visiblePendingUpdates[0].content}
+              active={!composerFocused && !agentQuestion}
+              onAccept={() => {
+                void acceptNextPendingUpdate();
+                if (pendingUpdates.length <= 1) setComposerFocused(true);
+              }}
+              onReject={() => {
+                rejectNextPendingUpdate();
+                if (pendingUpdates.length <= 1) setComposerFocused(true);
+              }}
+              onFeedback={(fb) => {
+                feedbackOnPendingUpdate(fb);
+                if (pendingUpdates.length <= 1) setComposerFocused(true);
+              }}
               width={contentWidth}
             />
           )}
@@ -1047,7 +1133,20 @@ export function App({
           )}
 
           {agentQuestion && (
-            <QuestionCard width={contentWidth} question={agentQuestion.question.question} options={agentQuestion.question.options} />
+            <QuestionCard
+              width={contentWidth}
+              question={agentQuestion.question.question}
+              options={agentQuestion.question.options}
+              active={!composerFocused}
+              onSelect={(answer, isCustom) => {
+                addSystemMessage(`> ${answer}`);
+                agentQuestion.resolve({ questionId: agentQuestion.question.id, answer, isCustom });
+                clearPendingQuestion();
+                const nextQuestion = getPendingQuestion();
+                setAgentQuestion(nextQuestion);
+                setComposerFocused(nextQuestion === null);
+              }}
+            />
           )}
 
           <Box borderStyle="round" borderColor={agentQuestion ? themeColors.warning : composerFocused ? themeColors.borderFocused : themeColors.borderDefault} paddingX={1} flexDirection="column" width={contentWidth}>
@@ -1065,9 +1164,10 @@ export function App({
                 accentColor={themeColors.accent}
                 mutedColor={themeColors.muted}
                 placeholder={
-                  agentQuestion ? "Type your answer..."
+                  agentQuestion ? "Answer in the card above"
                     : !hasAuth ? "Type /auth or /config apikey"
                     : !hasWorkspace ? "Type /init to create workspace"
+                    : pendingUpdates.length > 0 && composerFocused ? "Esc to review updates, or keep drafting"
                     : busy ? "Draft your next message while the agent works"
                     : "Ask a question or type / for commands"
                 }

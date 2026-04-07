@@ -56,7 +56,7 @@ export function getAvailableModels(providerKind?: string): readonly string[] {
   return getProviderCatalog(providerKind).models;
 }
 
-export function isSupportedModel(model: string | undefined, providerKind?: string): boolean {
+function isSupportedModel(model: string | undefined, providerKind?: string): boolean {
   if (!model) return false;
   return getAvailableModels(providerKind).includes(model);
 }

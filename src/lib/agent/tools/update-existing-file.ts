@@ -31,6 +31,8 @@ export function executeUpdateExistingFile(
 
   const mode = args.mode ?? "rewrite";
 
+  const oldContent = ctx.workspaceFiles[args.key];
+
   if (mode === "rewrite") {
     const content = (args as { content: string }).content;
     if (content == null) {
@@ -45,6 +47,7 @@ export function executeUpdateExistingFile(
       type: "edit",
       key: args.key,
       content,
+      oldContent,
       summary: args.summary,
     };
 
@@ -121,6 +124,7 @@ export function executeUpdateExistingFile(
     type: "edit",
     key: args.key,
     content: currentContent,
+    oldContent,
     summary: autoSummary,
   };
 

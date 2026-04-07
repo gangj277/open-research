@@ -73,10 +73,6 @@ export function getCompactThreshold(model: string): number {
     : Math.floor(window * 0.80);
 }
 
-export function getEffectiveLimit(model: string): number {
-  return Math.floor(getContextWindow(model) * EFFECTIVE_PERCENT);
-}
-
 // ── Token Usage Tracking ────────────────────────────────────────────────────
 
 export interface TokenBreakdown {

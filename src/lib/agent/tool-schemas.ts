@@ -112,14 +112,24 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "write_new_file",
-      description: "Create a new workspace file.",
+      description: [
+        "Create a new workspace file. The key determines where the file is placed:",
+        "- `note:<descriptive-slug>` → notes/<slug>.md — analysis, summaries, briefs, memos",
+        "- `paper:<descriptive-slug>` → papers/<slug>.tex — LaTeX drafts and manuscripts",
+        "- `experiment:<descriptive-slug>` → experiments/<slug>.json — experiment configs and results",
+        "- `source:<descriptive-slug>` → sources/<slug>.md — extracted source material",
+        "- `path:<relative/path.ext>` → exact path — scripts, configs, data files, any custom location",
+        "Use path: for code files (e.g. `path:scripts/analyze.py`, `path:data/results.csv`).",
+        "Use descriptive slugs, not UUIDs: `note:transformer-scaling-laws` not `note:abc123`.",
+        "Use the folder param to organize within managed directories (e.g. folder: \"lit-review\").",
+      ].join(" "),
       parameters: {
         type: "object",
         properties: {
-          key: { type: "string" },
-          label: { type: "string" },
+          key: { type: "string", description: "File key with prefix determining placement: note:<slug>, paper:<slug>, experiment:<slug>, source:<slug>, or path:<relative/path>" },
+          label: { type: "string", description: "Human-readable display name for the file" },
           content: { type: "string" },
-          folder: { type: "string" },
+          folder: { type: "string", description: "Optional subfolder within the managed directory for organization" },
         },
         required: ["key", "label", "content"],
         additionalProperties: false,
@@ -294,34 +304,59 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     function: {
       name: "ask_user",
       description:
-        "Ask the user a question and wait for their response. " +
-        "Use this when you need clarification, a decision between options, or confirmation before proceeding. " +
-        "Provide clear options when possible. The user can also type a custom answer.",
+        "Ask the user one or more questions and wait for their responses. " +
+        "Use when you need clarification, a decision, or confirmation before proceeding. " +
+        "You can batch up to 4 related questions in a single call — the user answers them all at once. " +
+        "Provide predefined options when possible. The user can arrow-key select or type a custom answer.",
       parameters: {
         type: "object",
         properties: {
+          questions: {
+            type: "array",
+            minItems: 1,
+            maxItems: 4,
+            items: {
+              type: "object",
+              properties: {
+                question: {
+                  type: "string",
+                  description: "Clear, specific question. State what you need to know and why.",
+                },
+                options: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label: { type: "string", description: "Short option label (1-5 words)" },
+                      description: { type: "string", description: "One-sentence explanation of what this choice means" },
+                    },
+                    required: ["label", "description"],
+                  },
+                  description: "Predefined options. Include 2-5 choices. The user can also type a custom answer.",
+                },
+              },
+              required: ["question"],
+            },
+            description: "One or more questions to ask. Batch related questions together (max 4).",
+          },
+          // Legacy single-question support (backward compat)
           question: {
             type: "string",
-            description: "The question to ask the user.",
+            description: "Single question (shorthand). Use 'questions' array for multiple.",
           },
           options: {
             type: "array",
             items: {
               type: "object",
               properties: {
-                label: { type: "string", description: "Short option label (1-5 words)." },
-                description: { type: "string", description: "One-sentence description of this option." },
+                label: { type: "string" },
+                description: { type: "string" },
               },
               required: ["label", "description"],
             },
-            description: "Predefined options for the user to choose from.",
-          },
-          allow_custom: {
-            type: "boolean",
-            description: "Whether the user can type a custom answer. Default: true.",
+            description: "Options for single question (shorthand).",
           },
         },
-        required: ["question"],
         additionalProperties: false,
       },
     },

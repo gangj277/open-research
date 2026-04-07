@@ -22,6 +22,7 @@ import { getPackageVersion } from "@/lib/cli/version";
 import { ensureOpenResearchConfig } from "@/lib/config/store";
 import { hasConfiguredProvider } from "@/lib/llm/provider-resolution";
 import { App } from "@/tui/app";
+import { createStableInkStdout } from "@/tui/ink-stdout";
 
 const program = new Command();
 
@@ -44,7 +45,10 @@ program
           pendingUpdates: [],
         },
       }),
-      { exitOnCtrlC: false },
+      {
+        exitOnCtrlC: false,
+        stdout: createStableInkStdout(process.stdout),
+      },
     );
   });
 

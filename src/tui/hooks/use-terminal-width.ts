@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useStdout } from "ink";
-import { getObservedTerminalWidth } from "@/tui/layout";
+import { getObservedTerminalWidth, getStableObservedTerminalWidth } from "@/tui/layout";
+
+const RESIZE_DEBOUNCE_MS = 50;
 
 export function useTerminalWidth() {
   const { stdout } = useStdout();
@@ -10,20 +12,44 @@ export function useTerminalWidth() {
 
   useEffect(() => {
     const stream = stdout as NodeJS.WriteStream & { columns?: number };
-    const updateWidth = () => {
-      const nextWidth = getObservedTerminalWidth(stream.columns, process.stdout.columns);
-      setTerminalWidth((current) => current === nextWidth ? current : nextWidth);
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const commitWidth = () => {
+      setTerminalWidth((current) => {
+        const nextWidth = getStableObservedTerminalWidth(current, stream.columns, process.stdout.columns);
+        return current === nextWidth ? current : nextWidth;
+      });
     };
 
-    updateWidth();
+    const scheduleWidthUpdate = () => {
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+      }
+
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        commitWidth();
+      }, RESIZE_DEBOUNCE_MS);
+    };
+
+    commitWidth();
     if (typeof stream.on === "function") {
-      stream.on("resize", updateWidth);
+      stream.on("resize", scheduleWidthUpdate);
       return () => {
+        if (resizeTimer) {
+          clearTimeout(resizeTimer);
+        }
         if (typeof stream.off === "function") {
-          stream.off("resize", updateWidth);
+          stream.off("resize", scheduleWidthUpdate);
         }
       };
     }
+
+    return () => {
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+      }
+    };
   }, [stdout]);
 
   return terminalWidth;

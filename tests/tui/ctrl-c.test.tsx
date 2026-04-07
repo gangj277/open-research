@@ -64,6 +64,7 @@ vi.mock("@/lib/config/store", () => ({
 
 vi.mock("@/lib/auth/store", () => ({
   loadStoredAuth: (...args: unknown[]) => loadStoredAuthMock(...args),
+  loadGeminiAuth: vi.fn(async () => null),
   clearStoredAuth: vi.fn(async () => {}),
   saveStoredAuth: vi.fn(async () => ""),
 }));

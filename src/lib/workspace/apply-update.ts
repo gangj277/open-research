@@ -3,20 +3,24 @@ import path from "node:path";
 import type { ProposedUpdate } from "@/lib/agent/state";
 
 function resolveRelativePath(update: ProposedUpdate): string {
+  const folder = update.folder;
+  const sub = (dir: string, name: string, ext: string) =>
+    folder ? `${dir}/${folder}/${name}${ext}` : `${dir}/${name}${ext}`;
+
   if (update.key.startsWith("path:")) {
     return update.key.slice(5);
   }
   if (update.key.startsWith("note:")) {
-    return `notes/${update.key.slice(5)}.md`;
+    return sub("notes", update.key.slice(5), ".md");
   }
   if (update.key.startsWith("paper:")) {
-    return `papers/${update.key.slice(6)}.tex`;
+    return sub("papers", update.key.slice(6), ".tex");
   }
   if (update.key.startsWith("experiment:")) {
-    return `experiments/${update.key.slice(11)}.json`;
+    return sub("experiments", update.key.slice(11), ".json");
   }
   if (update.key.startsWith("source:")) {
-    return `sources/${update.key.slice(7)}.md`;
+    return sub("sources", update.key.slice(7), ".md");
   }
   return `artifacts/${update.key}.md`;
 }

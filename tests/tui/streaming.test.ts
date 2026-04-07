@@ -61,4 +61,20 @@ describe("streaming helpers", () => {
       dynamicMessages: [],
     });
   });
+
+  test("keeps the latest tool summary dynamic after streaming settles", () => {
+    const messages = [
+      { role: "user" as const, text: "Question" },
+      { role: "assistant" as const, text: "Finished answer" },
+      {
+        role: "system" as const,
+        text: '__tool_summary__{"summary":"Read 2 files","tools":[]}',
+      },
+    ];
+
+    expect(splitMessagesForRender(messages, false)).toEqual({
+      staticMessages: messages.slice(0, -1),
+      dynamicMessages: [messages[2]],
+    });
+  });
 });

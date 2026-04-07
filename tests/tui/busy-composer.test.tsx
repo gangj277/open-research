@@ -1,6 +1,7 @@
 import React from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { render } from "ink-testing-library";
+import { executeAskUser, resetPendingQuestions } from "@/lib/agent/tools/ask-user";
 
 const {
   runAgentTurnMock,
@@ -54,6 +55,7 @@ vi.mock("@/lib/config/store", () => ({
 
 vi.mock("@/lib/auth/store", () => ({
   loadStoredAuth: (...args: unknown[]) => loadStoredAuthMock(...args),
+  loadGeminiAuth: vi.fn(async () => null),
   clearStoredAuth: vi.fn(async () => {}),
   saveStoredAuth: vi.fn(async () => ""),
 }));
@@ -115,6 +117,7 @@ describe("busy composer drafting", () => {
           // Intentionally left pending to keep the app in busy state.
         })
     );
+    resetPendingQuestions();
   });
 
   test("keeps the composer available for drafting while the agent is busy", async () => {
@@ -137,6 +140,51 @@ describe("busy composer drafting", () => {
 
     expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
     expect(lastFrame()).toContain("next question");
+    unmount();
+  });
+
+  test("shows pending review immediately after ask_user completes", async () => {
+    runAgentTurnMock.mockImplementation(async () => {
+      await executeAskUser({
+        question: "Which outline should I draft?",
+        options: [
+          { label: "Concise", description: "Short and direct" },
+          { label: "Detailed", description: "Longer and more structured" },
+        ],
+      });
+
+      return {
+        text: "Prepared a revised outline.",
+        activeSkills: [],
+        proposedUpdates: [
+          {
+            id: "update-1",
+            type: "edit",
+            key: "path:notes/brief.md",
+            summary: "Revise the working brief",
+            oldContent: "# Brief\n\nResearch overview",
+            content: "# Brief\n\nUpdated research overview",
+          },
+        ],
+      };
+    });
+
+    const { stdin, lastFrame, unmount } = renderReadyApp();
+
+    stdin.write("help me refine the brief");
+    stdin.write("\r");
+    await waitForUi(260);
+
+    expect(lastFrame()).toContain("Agent needs your input");
+
+    stdin.write("\r");
+    await waitForUi(120);
+
+    expect(lastFrame()).not.toContain("Agent needs your input");
+    expect(lastFrame()).toContain("awaiting review");
+    expect(lastFrame()).toContain("select · Enter confirm");
+    expect(lastFrame()).not.toContain("Waiting...");
+
     unmount();
   });
 });

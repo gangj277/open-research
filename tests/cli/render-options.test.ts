@@ -11,4 +11,13 @@ describe("cli render options", () => {
 
     expect(source).toMatch(/exitOnCtrlC:\s*false/);
   });
+
+  test("wraps stdout to force stable full redraws in the live Ink app", async () => {
+    const source = await readFile(
+      path.resolve(import.meta.dirname, "../../src/cli.ts"),
+      "utf8"
+    );
+
+    expect(source).toMatch(/createStableInkStdout\(process\.stdout\)/);
+  });
 });

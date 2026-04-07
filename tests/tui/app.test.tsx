@@ -61,6 +61,7 @@ vi.mock("@/lib/config/store", () => ({
 const mockLoadStoredAuth = vi.fn(async () => null);
 vi.mock("@/lib/auth/store", () => ({
   loadStoredAuth: (...args: unknown[]) => mockLoadStoredAuth(...args),
+  loadGeminiAuth: vi.fn(async () => null),
   clearStoredAuth: vi.fn(async () => {}),
   saveStoredAuth: vi.fn(async () => ""),
 }));
@@ -144,7 +145,8 @@ describe("tui first-run state", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(lastFrame()).toMatch(/ready/i);
+    expect(lastFrame()).toMatch(/ask a question/i);
+    expect(lastFrame()).toMatch(/connected/i);
     expect(lastFrame()).toMatch(/\/help/i);
   });
 

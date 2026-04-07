@@ -157,6 +157,16 @@ export function getUnifiedSuggestions(
   return [...cmdHits, ...skillHits];
 }
 
+/** Extract the /slash trigger being typed (works at position 0 or after a space). */
+export function extractSlashTrigger(text: string): { partial: string; start: number } | null {
+  const lastSlash = text.lastIndexOf("/");
+  if (lastSlash === -1) return null;
+  if (lastSlash > 0 && text[lastSlash - 1] !== " ") return null;
+  const after = text.slice(lastSlash + 1);
+  if (after.includes(" ")) return null;
+  return { partial: after.toLowerCase(), start: lastSlash };
+}
+
 /** Extract the @mention token being typed. */
 export function extractAtMention(text: string): { partial: string; start: number } | null {
   const lastAt = text.lastIndexOf("@");

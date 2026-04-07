@@ -5,10 +5,21 @@ export function getTerminalWidth(columns?: number): number {
   return Math.max(MIN_TERMINAL_WIDTH, columns ?? process.stdout.columns ?? DEFAULT_TERMINAL_WIDTH);
 }
 
-export function getObservedTerminalWidth(...columns: Array<number | undefined>): number {
+function normalizeObservedTerminalWidth(fallbackWidth: number, ...columns: Array<number | undefined>): number {
   const observed = columns.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-  if (observed.length === 0) return DEFAULT_TERMINAL_WIDTH;
+  if (observed.length === 0) {
+    return Math.max(MIN_TERMINAL_WIDTH, fallbackWidth);
+  }
+
   return Math.max(MIN_TERMINAL_WIDTH, Math.min(...observed));
+}
+
+export function getObservedTerminalWidth(...columns: Array<number | undefined>): number {
+  return normalizeObservedTerminalWidth(DEFAULT_TERMINAL_WIDTH, ...columns);
+}
+
+export function getStableObservedTerminalWidth(currentWidth: number, ...columns: Array<number | undefined>): number {
+  return normalizeObservedTerminalWidth(currentWidth, ...columns);
 }
 
 export function insetWidth(width: number, inset: number): number {

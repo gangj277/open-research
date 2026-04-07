@@ -24,11 +24,20 @@ function normalizeDbBackedKey(key: string): string {
   return `${prefix}:${crypto.randomUUID()}`;
 }
 
+const VALID_PREFIXES = ["note:", "paper:", "experiment:", "source:", "path:"];
+
 export function executeWriteNewFile(
   args: { key: string; label: string; content: string; folder?: string },
   ctx: WorkspaceContext
 ): { result: string; update: ProposedUpdate } | { result: string; update: null } {
   const normalizedKey = normalizeDbBackedKey(args.key);
+
+  if (!VALID_PREFIXES.some((p) => normalizedKey.startsWith(p))) {
+    return {
+      result: `Error: Key "${normalizedKey}" is missing a required prefix. Use one of: note:<slug>, paper:<slug>, experiment:<slug>, source:<slug>, or path:<relative/path>. Example: note:${normalizedKey}`,
+      update: null,
+    };
+  }
 
   if (normalizedKey in ctx.workspaceFiles) {
     return {

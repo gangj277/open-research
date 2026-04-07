@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Box, Text, useInput, useStdout, measureElement } from "ink";
 import type { DOMElement } from "ink";
 import chalk from "chalk";
@@ -226,37 +226,45 @@ export default function TextInput({
     }
   }, [originalValue]);
 
-  useEffect(() => {
-    const fallbackWidth = stdout.columns ?? 0;
-    if (!containerRef.current) {
-      if (fallbackWidth > 0) {
-        setInputWidth((current) => (current === fallbackWidth ? current : fallbackWidth));
+  useLayoutEffect(() => {
+    setInputWidth((current) => {
+      const fallbackWidth = typeof stdout.columns === "number" && stdout.columns > 0 ? stdout.columns : current;
+      if (!containerRef.current) {
+        return fallbackWidth > 0 && fallbackWidth !== current ? fallbackWidth : current;
       }
-      return;
-    }
 
-    const measuredWidth = measureElement(containerRef.current).width;
-    const nextWidth = measuredWidth > 0 ? measuredWidth : fallbackWidth;
-    if (nextWidth > 0) {
-      setInputWidth((current) => (current === nextWidth ? current : nextWidth));
-    }
-  });
+      const measuredWidth = measureElement(containerRef.current).width;
+      const nextWidth = measuredWidth > 0 ? measuredWidth : fallbackWidth;
+      if (nextWidth > 0 && nextWidth !== current) {
+        return nextWidth;
+      }
+
+      return current;
+    });
+  }, [stdout.columns]);
 
   // Build a paste badge string
   function pasteBadge(entry: { id: number; lineCount: number }): string {
     return applyThemeColor(chalk.dim as ChalkStyle, accentColor, `[Pasted text #${entry.id} +${entry.lineCount} lines]`);
   }
 
-  // Detect slash command token length: "/command" portion before first space
-  function getSlashCommandEnd(): number {
-    if (!originalValue.startsWith("/")) return 0;
-    const spaceIdx = originalValue.indexOf(" ");
-    return spaceIdx === -1 ? originalValue.length : spaceIdx;
+  // Detect slash command token: "/command" portion at position 0 or after a space
+  function getSlashCommandRange(): { start: number; end: number } {
+    let slashIdx = originalValue.lastIndexOf("/");
+    while (slashIdx > 0 && originalValue[slashIdx - 1] !== " ") {
+      slashIdx = originalValue.lastIndexOf("/", slashIdx - 1);
+    }
+    if (slashIdx === -1) return { start: 0, end: 0 };
+    const afterSlash = originalValue.indexOf(" ", slashIdx);
+    const end = afterSlash === -1 ? originalValue.length : afterSlash;
+    return { start: slashIdx, end };
   }
 
   // Build a rendered string with a fake cursor and paste badges
   function buildRendered(): string {
-    const cmdEnd = getSlashCommandEnd();
+    const cmdRange = getSlashCommandRange();
+    const hasCmd = cmdRange.end > cmdRange.start;
+    const inCmd = (idx: number) => hasCmd && idx >= cmdRange.start && idx < cmdRange.end;
 
     if (showCursor && focus) {
       if (originalValue.length === 0) return chalk.inverse(" ");
@@ -279,12 +287,12 @@ export default function TextInput({
         } else if (i === cursorOffset) {
           if (char === "\n") {
             result += chalk.inverse(" ") + "\n";
-          } else if (cmdEnd > 0 && i < cmdEnd) {
+          } else if (inCmd(i)) {
             result += applyThemeColor(chalk.inverse as ChalkStyle, accentColor, char);
           } else {
             result += chalk.inverse(char);
           }
-        } else if (cmdEnd > 0 && i < cmdEnd) {
+        } else if (inCmd(i)) {
           result += applyThemeColor(chalk as ChalkStyle, accentColor, char);
         } else {
           result += char;
@@ -306,7 +314,7 @@ export default function TextInput({
         const entry = pasteIdx < pasteIds.length ? pasteMapRef.current.get(pasteIds[pasteIdx]!) : undefined;
         pasteIdx++;
         result += entry ? pasteBadge(entry) : "";
-      } else if (cmdEnd > 0 && i < cmdEnd) {
+      } else if (inCmd(i)) {
         result += applyThemeColor(chalk as ChalkStyle, accentColor, char);
       } else {
         result += char;

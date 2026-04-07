@@ -1,6 +1,7 @@
-import React from "react";
-import { Box, Text } from "ink";
+import React, { memo, useMemo, useState } from "react";
+import { Box, Text, useInput } from "ink";
 import wrapAnsi from "wrap-ansi";
+import { structuredPatch } from "diff";
 import { renderMarkdown } from "@/tui/markdown";
 import { getTerminalWidth, insetWidth, truncateToWidth } from "@/tui/layout";
 import { useTheme } from "@/tui/theme";
@@ -46,7 +47,7 @@ export function Divider({ width, color }: { width?: number; color?: string }) {
 
 // ── Message Components ──────────────────────────────────────────────────────
 
-export function UserMessage({ text, width }: { text: string; width?: number }) {
+export const UserMessage = memo(function UserMessage({ text, turnNumber, width }: { text: string; turnNumber?: number; width?: number }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
   const bodyWidth = indentedWidth(contentWidth);
@@ -56,15 +57,18 @@ export function UserMessage({ text, width }: { text: string; width?: number }) {
       <Box width={contentWidth}>
         <Text color={theme.accent} bold>{GUTTER.user} </Text>
         <Text bold color={theme.accent}>you</Text>
+        {typeof turnNumber === "number" && (
+          <Text color={theme.muted} dimColor> {GUTTER.system} #{turnNumber}</Text>
+        )}
       </Box>
       <Box marginLeft={2} width={bodyWidth}>
         <Text color={theme.text} wrap="wrap">{wrappedText}</Text>
       </Box>
     </Box>
   );
-}
+});
 
-export function AgentMessage({ text, width }: { text: string; width?: number }) {
+export const AgentMessage = memo(function AgentMessage({ text, width }: { text: string; width?: number }) {
   const contentWidth = resolveWidth(width);
   const bodyWidth = indentedWidth(contentWidth);
   const theme = useTheme();
@@ -79,6 +83,19 @@ export function AgentMessage({ text, width }: { text: string; width?: number }) 
       <Box marginLeft={2} width={bodyWidth}>
         <Text wrap="wrap">{wrappedText}</Text>
       </Box>
+    </Box>
+  );
+});
+
+// ── Thinking Indicator ────────────────────────────────────────────────────
+
+export function ThinkingIndicator({ frame, width }: { frame: string; width?: number }) {
+  const theme = useTheme();
+  const contentWidth = resolveWidth(width);
+  return (
+    <Box marginBottom={1} width={contentWidth}>
+      <Text color={theme.secondary} bold>{GUTTER.agent} </Text>
+      <Text color={theme.muted} dimColor>{frame} thinking...</Text>
     </Box>
   );
 }
@@ -126,7 +143,7 @@ export function TaskPanel({
 
 // ── Tool Activity Summary (collapsed / expanded) ───────────────────────────
 
-export function ToolActivitySummary({
+export const ToolActivitySummary = memo(function ToolActivitySummary({
   summary,
   tools,
   expanded = false,
@@ -139,22 +156,25 @@ export function ToolActivitySummary({
 }) {
   const theme = useTheme();
   const contentWidth = indentedWidth(resolveWidth(width));
+  const innerWidth = indentedWidth(contentWidth, 4);
   if (expanded) {
-    // Expanded: show every tool call with duration
     return (
-      <Box flexDirection="column" marginLeft={2} marginBottom={0} width={contentWidth}>
-        <Text color={theme.muted} dimColor wrap="wrap">
-          {GUTTER.tool} {summary}
-        </Text>
-        {tools.map((t, i) => {
-          const dur = t.durationMs ? ` (${(t.durationMs / 1000).toFixed(1)}s)` : "";
-          const prefix = i === tools.length - 1 ? "└" : "├";
-          return (
-            <Text key={i} color={theme.muted} dimColor wrap="wrap">
-              {"  "}{prefix} {GUTTER.success} {t.description}{dur}
-            </Text>
-          );
-        })}
+      <Box flexDirection="row" marginLeft={2} marginBottom={0} width={contentWidth}>
+        <Text color={theme.muted} dimColor>{"│ "}</Text>
+        <Box flexDirection="column" width={innerWidth}>
+          <Text color={theme.muted} dimColor wrap="wrap">
+            {GUTTER.tool} {summary}
+          </Text>
+          {tools.map((t, i) => {
+            const dur = t.durationMs ? ` (${(t.durationMs / 1000).toFixed(1)}s)` : "";
+            const prefix = i === tools.length - 1 ? "└" : "├";
+            return (
+              <Text key={i} color={theme.muted} dimColor wrap="wrap">
+                {"  "}{prefix} {GUTTER.success} {t.description}{dur}
+              </Text>
+            );
+          })}
+        </Box>
       </Box>
     );
   }
@@ -164,18 +184,21 @@ export function ToolActivitySummary({
   const hint = tools.length > 1 ? " (ctrl+o to expand)" : "";
 
   return (
-    <Box flexDirection="column" marginLeft={2} marginBottom={0} width={contentWidth}>
-      <Text color={theme.muted} dimColor wrap="wrap">
-        {GUTTER.tool} {summary}{hint}
-      </Text>
-      {lastTarget && tools.length > 1 && (
+    <Box flexDirection="row" marginLeft={2} marginBottom={0} width={contentWidth}>
+      <Text color={theme.muted} dimColor>{"│ "}</Text>
+      <Box flexDirection="column" width={innerWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">
-          {"  └ "}{lastTarget}
+          {GUTTER.tool} {summary}{hint}
         </Text>
-      )}
+        {lastTarget && tools.length > 1 && (
+          <Text color={theme.muted} dimColor wrap="wrap">
+            {"  └ "}{lastTarget}
+          </Text>
+        )}
+      </Box>
     </Box>
   );
-}
+});
 
 // ── Sub-Agent Live Indicator ────────────────────────────────────────────────
 
@@ -224,42 +247,66 @@ export function SubAgentIndicator({
   );
 }
 
-export function SystemMessage({ text, width }: { text: string; width?: number }) {
+export const SystemMessage = memo(function SystemMessage({ text, width }: { text: string; width?: number }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
   const indentedContentWidth = indentedWidth(contentWidth);
   const wrappedIndentedText = wrapText(text, indentedContentWidth);
   const wrappedText = wrapText(text, contentWidth);
-  // Tool activity lines (✓ prefix) get special treatment
-  if (text.trimStart().startsWith("✓") || text.trimStart().startsWith("✗")) {
+  const trimmed = text.trimStart();
+
+  // Tool activity lines (checkmark/cross prefix) get special treatment
+  if (trimmed.startsWith("\u2713") || trimmed.startsWith("\u2717")) {
     return (
       <Box marginLeft={2} width={indentedContentWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">{wrappedIndentedText}</Text>
       </Box>
     );
   }
-  // Compaction notices
-  if (text.includes("compacted") || text.includes("Context")) {
+
+  // Error messages — elevated styling
+  if (trimmed.startsWith("Error:") || trimmed.startsWith("Failed:")) {
+    return (
+      <Box marginLeft={2} width={indentedContentWidth}>
+        <Text color={theme.error} wrap="wrap">{wrapText(`${GUTTER.error} ${text.trim()}`, indentedContentWidth)}</Text>
+      </Box>
+    );
+  }
+
+  // Memory / ontology updates — accent-tinted, important
+  if (trimmed.includes("\u25CA remembered:") || trimmed.includes("\u25CA ontology") || trimmed.includes("\u25CA learned:")) {
+    return (
+      <Box marginLeft={2} width={indentedContentWidth}>
+        <Text color={theme.accent} dimColor wrap="wrap">{wrapText(text.trim(), indentedContentWidth)}</Text>
+      </Box>
+    );
+  }
+
+  // Compaction notices — warning tier
+  if (text.includes("compacted") || text.includes("Context compacted")) {
     return (
       <Box marginLeft={2} width={indentedContentWidth}>
         <Text color={theme.warning} dimColor wrap="wrap">{wrapText(`${GUTTER.system} ${text.trim()}`, indentedContentWidth)}</Text>
       </Box>
     );
   }
+
   // Command echoes (> /auth etc)
-  if (text.trimStart().startsWith(">")) {
+  if (trimmed.startsWith(">")) {
     return (
       <Box width={contentWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">{wrappedText}</Text>
       </Box>
     );
   }
+
+  // Default: muted routine messages
   return (
     <Box width={contentWidth}>
       <Text color={theme.muted} wrap="wrap">{wrapText(`${GUTTER.system} ${text.trim()}`, contentWidth)}</Text>
     </Box>
   );
-}
+});
 
 // ── Prompt Prefix ───────────────────────────────────────────────────────────
 
@@ -300,39 +347,245 @@ export function StatusBadge({
   );
 }
 
+// ── Diff Lines ──────────────────────────────────────────────────────────────
+
+interface DiffLine {
+  type: "add" | "del" | "ctx";
+  text: string;
+}
+
+const MAX_DIFF_LINES = 16;
+
+/** Compute diff lines from old/new content using structuredPatch */
+function computeDiffLines(oldContent: string | undefined, newContent: string, fileName: string): DiffLine[] {
+  if (oldContent == null) {
+    // New file — show all lines as additions (capped)
+    const lines = newContent.split("\n");
+    return lines.slice(0, MAX_DIFF_LINES + 4).map((l) => ({ type: "add" as const, text: l }));
+  }
+
+  const patch = structuredPatch(fileName, fileName, oldContent, newContent, "", "", { context: 2 });
+  const result: DiffLine[] = [];
+
+  for (const hunk of patch.hunks) {
+    if (result.length > 0) {
+      result.push({ type: "ctx", text: "···" });
+    }
+    for (const line of hunk.lines) {
+      if (line.startsWith("+")) {
+        result.push({ type: "add", text: line.slice(1) });
+      } else if (line.startsWith("-")) {
+        result.push({ type: "del", text: line.slice(1) });
+      } else {
+        result.push({ type: "ctx", text: line.slice(1) });
+      }
+    }
+  }
+  return result;
+}
+
 // ── Pending Update Card ─────────────────────────────────────────────────────
 
 export function PendingUpdateCard({
   count,
   summary,
+  fileName,
+  updateType,
+  oldContent,
+  newContent,
+  active,
+  onAccept,
+  onReject,
+  onFeedback,
   width,
 }: {
   count: number;
   summary: string;
+  fileName: string;
+  updateType: "edit" | "new";
+  oldContent?: string;
+  newContent: string;
+  active: boolean;
+  onAccept: () => void;
+  onReject: () => void;
+  onFeedback: (feedback: string) => void;
   width?: number;
 }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
-  const bodyWidth = indentedWidth(borderedContentWidth(contentWidth));
+  const innerWidth = borderedContentWidth(contentWidth);
+  const bodyWidth = indentedWidth(innerWidth);
+
+  const diffLines = useMemo(
+    () => computeDiffLines(oldContent, newContent, fileName),
+    [oldContent, newContent, fileName],
+  );
+
+  const truncated = diffLines.length > MAX_DIFF_LINES;
+  const visibleLines = truncated ? diffLines.slice(0, MAX_DIFF_LINES) : diffLines;
+  const additions = diffLines.filter((l) => l.type === "add").length;
+  const deletions = diffLines.filter((l) => l.type === "del").length;
+
+  const options = [
+    { label: "Accept", description: "Apply this update" },
+    { label: "Reject", description: "Discard this update" },
+  ];
+  const totalItems = options.length + 1; // +1 for "Give feedback..."
+  const feedbackIndex = options.length;
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [mode, setMode] = useState<"selecting" | "typing">("selecting");
+  const [feedbackText, setFeedbackText] = useState("");
+
+  // Selection mode: arrow keys navigate, Enter picks option or enters typing mode
+  useInput((input, key) => {
+    if (!active || mode !== "selecting") return;
+    if (key.upArrow) {
+      setSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIndex((i) => Math.min(totalItems - 1, i + 1));
+      return;
+    }
+    if (key.return) {
+      if (selectedIndex === 0) { onAccept(); return; }
+      if (selectedIndex === 1) { onReject(); return; }
+      if (selectedIndex === feedbackIndex) {
+        setMode("typing");
+        setFeedbackText("");
+      }
+      return;
+    }
+  }, { isActive: active && mode === "selecting" });
+
+  // Typing mode: inline text editing within the card
+  useInput((input, key) => {
+    if (!active || mode !== "typing") return;
+    if (key.escape) {
+      setMode("selecting");
+      setFeedbackText("");
+      return;
+    }
+    if (key.return) {
+      if (feedbackText.trim()) {
+        onFeedback(feedbackText.trim());
+        setFeedbackText("");
+        setMode("selecting");
+      }
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setFeedbackText((t) => t.slice(0, -1));
+      return;
+    }
+    if (key.ctrl && input === "u") {
+      setFeedbackText("");
+      return;
+    }
+    if (!key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") {
+      setFeedbackText((t) => t + input);
+    }
+  }, { isActive: active && mode === "typing" });
+
+  const isFeedbackSelected = selectedIndex === feedbackIndex;
+  const lineNumWidth = Math.max(3, String(diffLines.length).length + 1);
+  const diffContentWidth = Math.max(1, bodyWidth - lineNumWidth - 3); // "+" prefix + space
+
   return (
     <Box
       borderStyle="single"
-      borderColor={theme.pending}
+      borderColor={theme.warning}
       paddingX={1}
-      marginBottom={1}
+      marginBottom={0}
       flexDirection="column"
       width={contentWidth}
     >
-      <Box width={borderedContentWidth(contentWidth)}>
+      {/* Header */}
+      <Box width={innerWidth}>
         <Text color={theme.pending} bold>{GUTTER.pending} </Text>
         <Text bold color={theme.pending}>{count} update{count > 1 ? "s" : ""} awaiting review</Text>
       </Box>
-      <Box marginLeft={2} width={bodyWidth}>
+      <Box marginLeft={2} marginTop={0} width={bodyWidth}>
         <Text color={theme.muted} wrap="wrap">{summary}</Text>
+        <Text color={theme.muted} dimColor>{"  "}</Text>
+        {additions > 0 && <Text color={theme.secondary}>+{additions}</Text>}
+        {additions > 0 && deletions > 0 && <Text color={theme.muted} dimColor> </Text>}
+        {deletions > 0 && <Text color={theme.error}>-{deletions}</Text>}
       </Box>
+
+      {/* Diff view */}
+      <Box flexDirection="column" marginLeft={2} marginTop={1} width={bodyWidth}>
+        {visibleLines.map((line, i) => {
+          const prefix = line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
+          const color = line.type === "add" ? theme.secondary : line.type === "del" ? theme.error : theme.muted;
+          const dimmed = line.type === "ctx";
+          const displayText = truncateToWidth(line.text, diffContentWidth);
+          return (
+            <Text key={i} color={color} dimColor={dimmed} wrap="truncate-end">
+              {prefix} {displayText}
+            </Text>
+          );
+        })}
+        {truncated && (
+          <Text color={theme.muted} dimColor>  ··· {diffLines.length - MAX_DIFF_LINES} more lines</Text>
+        )}
+      </Box>
+
+      {/* Options list */}
+      <Box flexDirection="column" marginLeft={2} marginTop={1} width={bodyWidth}>
+        {options.map((opt, idx) => {
+          const isSelected = active && mode === "selecting" && idx === selectedIndex;
+          const optColor = idx === 0 ? theme.secondary : theme.error;
+          return (
+            <Box key={opt.label} width={bodyWidth}>
+              {isSelected ? (
+                <>
+                  <Text inverse bold color={theme.accent}>{" \u203A "}</Text>
+                  <Text inverse bold>{" " + opt.label + " "}</Text>
+                  <Text color={theme.muted} dimColor> — {opt.description}</Text>
+                </>
+              ) : (
+                <>
+                  <Text color={theme.muted}>{"   "}</Text>
+                  <Text color={optColor}>{opt.label}</Text>
+                  <Text color={theme.muted} dimColor> — {opt.description}</Text>
+                </>
+              )}
+            </Box>
+          );
+        })}
+        {/* Give feedback row */}
+        {mode === "typing" ? (
+          <Box width={bodyWidth}>
+            <Text color={theme.accent} bold>{" \u203A "}</Text>
+            <Text color={theme.text}>{feedbackText}</Text>
+            <Text color={theme.accent}>{"\u2588"}</Text>
+          </Box>
+        ) : (
+          <Box width={bodyWidth}>
+            {active && isFeedbackSelected ? (
+              <>
+                <Text inverse bold color={theme.accent}>{" \u203A "}</Text>
+                <Text inverse bold color={theme.muted}>{" Give feedback... "}</Text>
+              </>
+            ) : (
+              <>
+                <Text color={theme.muted}>{"   "}</Text>
+                <Text color={theme.muted} dimColor>Give feedback...</Text>
+              </>
+            )}
+          </Box>
+        )}
+      </Box>
+      {/* Hint */}
       <Box marginLeft={2} marginTop={0} width={bodyWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">
-          <Text bold color={theme.secondary}>a</Text> accept  <Text bold color={theme.error}>r</Text> reject
+          {mode === "typing"
+            ? "Type your feedback \u00B7 Enter submit \u00B7 Esc back"
+            : active
+              ? "\u2191/\u2193 select \u00B7 Enter confirm"
+              : "Waiting..."
+          }
         </Text>
       </Box>
     </Box>
@@ -344,16 +597,86 @@ export function PendingUpdateCard({
 export function QuestionCard({
   question,
   options,
+  active,
+  onSelect,
   width,
 }: {
   question: string;
   options: Array<{ label: string; description: string }>;
+  active: boolean;
+  onSelect: (answer: string, isCustom: boolean) => void;
   width?: number;
 }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
   const innerWidth = borderedContentWidth(contentWidth);
   const bodyWidth = indentedWidth(innerWidth);
+
+  // Total items = options + "Custom answer..." row (only if there are predefined options)
+  const hasOptions = options.length > 0;
+  const totalItems = hasOptions ? options.length + 1 : 0;
+  const customIndex = options.length; // last item in list
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  // If no predefined options, start directly in typing mode
+  const [mode, setMode] = useState<"selecting" | "typing">(hasOptions ? "selecting" : "typing");
+  const [customText, setCustomText] = useState("");
+
+  // Selection mode: arrow keys navigate, Enter picks option or enters typing mode
+  useInput((input, key) => {
+    if (!active || mode !== "selecting" || !hasOptions) return;
+    if (key.upArrow) {
+      setSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIndex((i) => Math.min(totalItems - 1, i + 1));
+      return;
+    }
+    if (key.return) {
+      if (selectedIndex < options.length) {
+        // Selected a predefined option
+        const picked = options[selectedIndex];
+        if (picked) onSelect(picked.label, false);
+      } else {
+        // Selected "Custom answer..." — enter typing mode
+        setMode("typing");
+        setCustomText("");
+      }
+      return;
+    }
+  }, { isActive: active && mode === "selecting" });
+
+  // Typing mode: inline text editing within the card
+  useInput((input, key) => {
+    if (!active || mode !== "typing") return;
+    if (key.escape && hasOptions) {
+      // Back to selection mode (only if there are predefined options to go back to)
+      setMode("selecting");
+      setCustomText("");
+      return;
+    }
+    if (key.return) {
+      if (customText.trim()) {
+        onSelect(customText.trim(), true);
+      }
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setCustomText((t) => t.slice(0, -1));
+      return;
+    }
+    if (key.ctrl && input === "u") {
+      setCustomText("");
+      return;
+    }
+    // Regular character input
+    if (!key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") {
+      setCustomText((t) => t + input);
+    }
+  }, { isActive: active && mode === "typing" });
+
+  const isCustomSelected = selectedIndex === customIndex;
+
   return (
     <Box
       borderStyle="single"
@@ -370,20 +693,60 @@ export function QuestionCard({
       <Box marginLeft={2} marginTop={0} width={bodyWidth}>
         <Text color={theme.text} wrap="wrap">{question}</Text>
       </Box>
-      {options.length > 0 && (
-        <Box flexDirection="column" marginLeft={2} marginTop={1} width={bodyWidth}>
-          {options.map((opt, idx) => (
+      {/* Options list */}
+      <Box flexDirection="column" marginLeft={2} marginTop={1} width={bodyWidth}>
+        {options.map((opt, idx) => {
+          const isSelected = active && mode === "selecting" && idx === selectedIndex;
+          return (
             <Box key={opt.label} width={bodyWidth}>
-              <Text color={theme.accent} bold>{idx + 1}</Text>
-              <Text color={theme.text} wrap="wrap"> {opt.label}</Text>
-              <Text color={theme.muted} dimColor wrap="wrap"> — {opt.description}</Text>
+              {isSelected ? (
+                <>
+                  <Text inverse bold color={theme.accent}>{" \u203A "}</Text>
+                  <Text inverse bold>{" " + opt.label + " "}</Text>
+                  <Text color={theme.muted} dimColor> — {opt.description}</Text>
+                </>
+              ) : (
+                <>
+                  <Text color={theme.muted}>{"   "}</Text>
+                  <Text color={theme.text}>{opt.label}</Text>
+                  <Text color={theme.muted} dimColor> — {opt.description}</Text>
+                </>
+              )}
             </Box>
-          ))}
-        </Box>
-      )}
+          );
+        })}
+        {/* Custom answer row */}
+        {mode === "typing" ? (
+          <Box width={bodyWidth}>
+            <Text color={theme.accent} bold>{" \u203A "}</Text>
+            <Text color={theme.text}>{customText}</Text>
+            <Text color={theme.accent}>{"\u2588"}</Text>
+          </Box>
+        ) : (
+          <Box width={bodyWidth}>
+            {active && isCustomSelected ? (
+              <>
+                <Text inverse bold color={theme.accent}>{" \u203A "}</Text>
+                <Text inverse bold color={theme.muted}>{" Custom answer... "}</Text>
+              </>
+            ) : (
+              <>
+                <Text color={theme.muted}>{"   "}</Text>
+                <Text color={theme.muted} dimColor>Custom answer...</Text>
+              </>
+            )}
+          </Box>
+        )}
+      </Box>
+      {/* Hint */}
       <Box marginLeft={2} marginTop={0} width={bodyWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">
-          {options.length > 0 ? "Type number or custom answer" : "Type your answer"}
+          {mode === "typing"
+            ? "Type your answer \u00B7 Enter submit \u00B7 Esc back"
+            : active
+              ? "\u2191/\u2193 select \u00B7 Enter confirm"
+              : "Waiting..."
+          }
         </Text>
       </Box>
     </Box>

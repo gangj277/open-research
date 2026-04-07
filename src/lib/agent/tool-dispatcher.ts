@@ -128,7 +128,8 @@ export async function executeTool(
       return {
         result: await executeAskUser(
           args as {
-            question: string;
+            questions?: Array<{ question: string; options?: Array<{ label: string; description: string }> }>;
+            question?: string;
             options?: Array<{ label: string; description: string }>;
             allow_custom?: boolean;
           },

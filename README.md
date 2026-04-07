@@ -5,6 +5,7 @@
 <h3 align="center">The research-native CLI agent.</h3>
 
 <p align="center">
+  <a href="https://open-research.info">open-research.info</a> &nbsp;·&nbsp;
   <a href="https://www.npmjs.com/package/open-research"><img src="https://img.shields.io/npm/v/open-research.svg" alt="npm" /></a>
   <a href="https://github.com/gangj277/open-research/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/open-research.svg" alt="license" /></a>
 </p>

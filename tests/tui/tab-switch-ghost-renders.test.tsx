@@ -2,6 +2,7 @@ import React from "react";
 import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { render as inkRender } from "ink";
+import { createStableInkStdout } from "@/tui/ink-stdout";
 
 const {
   runAgentTurnMock,
@@ -178,7 +179,7 @@ function renderReadyApp(columns = 72, rows = 8) {
       }}
     />,
     {
-      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdout: createStableInkStdout(stdout as unknown as NodeJS.WriteStream),
       stderr: stderr as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,
       exitOnCtrlC: false,
@@ -259,6 +260,37 @@ describe("tab-switch ghost render regression", () => {
     expect(countOccurrences(frame, "Read 2 files")).toBe(1);
     expect(countOccurrences(frame, "Reading alpha.ts")).toBe(1);
     expect(countOccurrences(frame, "Reading beta.ts")).toBe(1);
+
+    unmount();
+    cleanup();
+  });
+
+  test("stops busy animation writes while the terminal is backgrounded", async () => {
+    runAgentTurnMock.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the app busy so the activity spinner would normally keep rendering.
+        })
+    );
+
+    const { stdin, stdout, unmount, cleanup } = renderReadyApp();
+
+    stdin.write("keep working");
+    stdin.write("\r");
+
+    await waitForMatch(stdout, "thinking...");
+
+    stdout.resize(0);
+    await waitForUi();
+
+    const writesWhileHidden = stdout.frames.length;
+
+    await waitForUi(320);
+
+    expect(stdout.frames.length).toBe(writesWhileHidden);
+
+    stdout.resize(72);
+    await waitForUi();
 
     unmount();
     cleanup();

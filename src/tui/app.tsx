@@ -135,7 +135,7 @@ export function App({
   const [screen, setScreen] = useState<"main" | "config" | "resume">("main");
   const [resumeSessions, setResumeSessions] = useState<import("@/lib/workspace/sessions").SavedSession[]>([]);
   const [ctrlCPending, setCtrlCPending] = useState(false);
-  const sessionId = useMemo(() => crypto.randomUUID(), []);
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
   const visiblePendingUpdates =
     deferredPendingUpdates.length > 0 ? deferredPendingUpdates : pendingUpdates;
@@ -253,11 +253,11 @@ export function App({
       if (cancelled) return;
       startTransition(() => setWorkspaceFiles(result.files));
     });
-    void initTaskStore(workspacePath).then(() => {
+    void initTaskStore(workspacePath, sessionId).then(() => {
       if (!cancelled) setTaskVersion((v) => v + 1);
     });
     return () => { cancelled = true; };
-  }, [workspacePath]);
+  }, [workspacePath, sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1014,6 +1014,9 @@ export function App({
           onSelect={async (session) => {
             try {
               const restored = await loadSessionHistory(workspacePath!, session.id);
+              setSessionId(session.id);
+              await initTaskStore(workspacePath!, session.id);
+              setTaskVersion((version) => version + 1);
               replaceMessages(restored.messages);
               startTransition(() => setHistory(restored.llmHistory));
               addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);

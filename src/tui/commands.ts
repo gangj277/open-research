@@ -30,6 +30,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "preview", aliases: [], description: "Live preview a LaTeX file in browser (e.g. /preview papers/draft.tex)", category: "workspace" },
   { name: "memory", aliases: ["/memories"], description: "View or clear stored memories about you", category: "system" },
   { name: "ontology", aliases: ["/onto"], description: "View or manage the research ontology", category: "workspace" },
+  { name: "undo", aliases: ["/revert"], description: "Undo the last turn's file changes", category: "session" },
+  { name: "undo-history", aliases: ["/snapshots"], description: "Show file changes per turn for selective undo", category: "session" },
   { name: "exit", aliases: ["/quit", "/q"], description: "Exit Open Research", category: "system" },
 ];
 

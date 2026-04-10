@@ -194,7 +194,6 @@ describe("tui layout hardening", () => {
         tokenDisplay="128.4k ctx · 512.0k total"
         workspaceName="research-workspace-with-a-very-long-name"
         mode="manual-review"
-        planningStatus="idle"
       />
     );
 

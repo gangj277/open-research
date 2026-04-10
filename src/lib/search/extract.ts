@@ -3,12 +3,19 @@ import { getProviderCatalog } from "@/lib/llm/provider-catalog";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+export type EvidenceType = "meta-analysis" | "systematic-review" | "experiment" | "observational" | "review" | "opinion" | "dataset" | "other";
+export type ExtractionConfidence = "high" | "medium" | "low";
+
 export interface ExtractionResult {
   supports: string[];
   contradicts: string[];
   related: string[];
   summary: string;
   relevanceScore: number;
+  evidenceType: EvidenceType;
+  methodologyNotes: string;
+  sampleInfo: string | null;
+  confidence: ExtractionConfidence;
 }
 
 export interface ExtractionInput {
@@ -22,9 +29,7 @@ export interface ExtractionInput {
 
 const MAX_CONTENT_CHARS = 12_000;
 
-const EXTRACTION_PROMPT = `You are a research extraction system. You receive source text and a research target.
-
-Analyze the source through the lens of the target and extract structured findings.
+const EXTRACTION_PROMPT = `You are a research extraction system. You receive source text and a research target. Analyze the source through the lens of the target and extract structured findings.
 
 Research target: {TARGET}
 Source: "{TITLE}" ({URL})
@@ -35,7 +40,11 @@ Rules:
 - "related": Relevant context that neither supports nor contradicts — methodology, definitions, related phenomena, frameworks.
 - "summary": One paragraph synthesizing what this source contributes to understanding the target.
 - "relevanceScore": 0-10. 0 = unrelated. 5 = tangentially relevant. 10 = directly addresses the target.
-- If clearly unrelated (score < 2), set supports/contradicts/related to empty arrays.
+- "evidenceType": Classify the source — meta-analysis, systematic-review, experiment, observational, review, opinion, dataset, or other.
+- "methodologyNotes": One sentence on methodology. Include study design, duration, key methods. Write "N/A" if not applicable (e.g., opinion piece).
+- "sampleInfo": Sample size and population if mentioned (e.g., "N=1,234 undergraduate students"). Null if not available.
+- "confidence": Your confidence in this extraction — high (clear evidence, unambiguous), medium (evidence present but interpretation uncertain), low (tangential or ambiguous source).
+- If clearly unrelated (score < 2), set supports/contradicts/related to empty arrays and evidenceType to "other".
 - Maximum 5 items per category. Prefer fewer precise items over many vague ones.
 - Include specific numbers, methods, or datasets when available.`;
 
@@ -67,8 +76,26 @@ const EXTRACTION_SCHEMA = {
         type: "number" as const,
         description: "0-10 relevance to target",
       },
+      evidenceType: {
+        type: "string" as const,
+        enum: ["meta-analysis", "systematic-review", "experiment", "observational", "review", "opinion", "dataset", "other"],
+        description: "Classification of evidence type",
+      },
+      methodologyNotes: {
+        type: "string" as const,
+        description: "Brief methodology description or N/A",
+      },
+      sampleInfo: {
+        type: ["string", "null"] as const,
+        description: "Sample size and population, or null if unavailable",
+      },
+      confidence: {
+        type: "string" as const,
+        enum: ["high", "medium", "low"],
+        description: "Extraction confidence level",
+      },
     },
-    required: ["supports", "contradicts", "related", "summary", "relevanceScore"],
+    required: ["supports", "contradicts", "related", "summary", "relevanceScore", "evidenceType", "methodologyNotes", "sampleInfo", "confidence"],
     additionalProperties: false,
   },
 };
@@ -103,6 +130,12 @@ export async function extractWithTarget(
     // Validate structure
     if (typeof parsed.relevanceScore !== "number") return null;
     if (!Array.isArray(parsed.supports)) return null;
+
+    // Default new fields if LLM omits them (backward safety)
+    if (!parsed.evidenceType) parsed.evidenceType = "other";
+    if (!parsed.methodologyNotes) parsed.methodologyNotes = "N/A";
+    if (parsed.sampleInfo === undefined) parsed.sampleInfo = null;
+    if (!parsed.confidence) parsed.confidence = "medium";
 
     return parsed;
   } catch {
@@ -140,6 +173,10 @@ export function formatExtractionResults(
     url: string;
     provider?: string;
     extraction: ExtractionResult;
+    year?: number;
+    venue?: string;
+    citationCount?: number;
+    queryIntent?: string;
   }>
 ): string {
   if (sources.length === 0) return "No relevant results found for this target.";
@@ -150,10 +187,23 @@ export function formatExtractionResults(
   const parts: string[] = [`Based on ${sorted.length} source${sorted.length !== 1 ? "s" : ""}:\n`];
 
   for (let i = 0; i < sorted.length; i++) {
-    const s = sorted[i];
+    const s = sorted[i]!;
     const providerLabel = s.provider ? ` [${s.provider}]` : "";
-    parts.push(`${i + 1}. "${s.title}"${providerLabel} (relevance: ${s.extraction.relevanceScore}/10)`);
+    const intentLabel = s.queryIntent === "adversarial" ? " [adversarial]" : "";
+
+    // Quality metadata line
+    const metaParts: string[] = [];
+    if (s.year) metaParts.push(String(s.year));
+    if (s.venue) metaParts.push(s.venue);
+    if (s.citationCount !== undefined && s.citationCount > 0) metaParts.push(`${s.citationCount} citations`);
+    metaParts.push(s.extraction.evidenceType);
+    if (s.extraction.sampleInfo) metaParts.push(s.extraction.sampleInfo);
+    if (s.extraction.confidence !== "high") metaParts.push(`confidence: ${s.extraction.confidence}`);
+    const metaLine = metaParts.length > 0 ? `   ${metaParts.join(" | ")}` : "";
+
+    parts.push(`${i + 1}. "${s.title}"${providerLabel}${intentLabel} (relevance: ${s.extraction.relevanceScore}/10)`);
     parts.push(`   ${s.url}`);
+    if (metaLine) parts.push(metaLine);
 
     if (s.extraction.supports.length > 0) {
       parts.push(`   Supports:`);
@@ -172,6 +222,9 @@ export function formatExtractionResults(
       for (const item of s.extraction.related) {
         parts.push(`   ~ ${item}`);
       }
+    }
+    if (s.extraction.methodologyNotes && s.extraction.methodologyNotes !== "N/A") {
+      parts.push(`   Methodology: ${s.extraction.methodologyNotes}`);
     }
     parts.push(`   Summary: ${s.extraction.summary}`);
     parts.push("");

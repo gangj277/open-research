@@ -1,5 +1,5 @@
 import { startTransition } from "react";
-import type { ProposedUpdate, AgentMode, PlanningState } from "@/lib/agent/state";
+import type { ProposedUpdate, AgentMode } from "@/lib/agent/state";
 import type { LLMMessage } from "@/lib/llm/types";
 import { scanWorkspace } from "@/lib/workspace/scan";
 import { initWorkspace, loadWorkspaceProject } from "@/lib/workspace/project";
@@ -33,7 +33,8 @@ import { startPreviewServer, type PreviewServer } from "@/lib/preview/server";
 import { SLASH_COMMANDS, type SlashCommand, type WorkspaceFile } from "@/tui/commands";
 import type { ConversationMessage } from "@/tui/streaming";
 import { resetPendingQuestions } from "@/lib/agent/tools/ask-user";
-import { clearAllTasks } from "@/lib/agent/tools/tasks";
+import { clearCurrentTask } from "@/lib/agent/tools/current-task";
+import type { TurnManager } from "@/lib/snapshot";
 
 export interface SlashCommandContext {
   homeDir?: string;
@@ -62,12 +63,12 @@ export interface SlashCommandContext {
   setActiveSkills: React.Dispatch<React.SetStateAction<Array<{ id: string; name: string; description: string; prompt: string; skillDir: string }>>>;
   setPendingUpdates: React.Dispatch<React.SetStateAction<ProposedUpdate[]>>;
   setStatusLine: (line: string) => void;
-  setPlanningState: React.Dispatch<React.SetStateAction<PlanningState>>;
   setTokenDisplay: (display: string) => void;
   setScreen: (screen: "main" | "config" | "resume") => void;
   setComposerFocused: (focused: boolean) => void;
   setResumeSessions: (sessions: import("@/lib/workspace/sessions").SavedSession[]) => void;
   exitApp: () => void;
+  turnManager: TurnManager | null;
 }
 
 export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: SlashCommandContext) {
@@ -76,7 +77,7 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
     sessionId, sessionTokens, agentMode,
     addSystemMessage, replaceMessages, setBusy, setAuthStatus, setWorkspacePath, setWorkspaceFiles,
     setConfig, setTheme, setAgentMode, setHistory, setActiveSkills, setPendingUpdates,
-    setStatusLine, setPlanningState, setTokenDisplay, setScreen, setComposerFocused,
+    setStatusLine, setTokenDisplay, setScreen, setComposerFocused,
     setResumeSessions, previewRef, exitApp,
   } = ctx;
 
@@ -190,9 +191,8 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       setActiveSkills([]);
       setPendingUpdates([]);
       setStatusLine("");
-      setPlanningState({ status: "idle", planningHistory: [] });
       resetPendingQuestions();
-      clearAllTasks();
+      clearCurrentTask();
       addSystemMessage("Conversation cleared.");
       break;
     }
@@ -239,7 +239,7 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
         }
         addSystemMessage(`Theme set to ${newTheme}.`);
       } else if (configKey === "mode") {
-        const validModes: AgentMode[] = ["manual-review", "auto-approve", "auto-research"];
+        const validModes: AgentMode[] = ["manual-review", "auto-approve"];
         if (!configValue || !validModes.includes(configValue as AgentMode)) {
           addSystemMessage(`Invalid mode. Options: ${validModes.join(", ")}`);
           break;
@@ -309,7 +309,7 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       }
       addSystemMessage("");
       addSystemMessage("Keyboard shortcuts:");
-      addSystemMessage("  Shift+Tab  cycle mode (manual-review → auto-approve → auto-research)");
+      addSystemMessage("  Shift+Tab  cycle mode (manual-review → auto-approve)");
       addSystemMessage("  a  accept next pending update");
       addSystemMessage("  r  reject next pending update");
       addSystemMessage("  Esc  unfocus prompt");
@@ -649,6 +649,74 @@ export async function executeSlashCommand(cmd: SlashCommand, args: string, ctx: 
       } else {
         addSystemMessage("Usage: /ontology [claims|conflicts|around <term>|delete <id>|edit <id>]");
       }
+      break;
+    }
+    case "undo": {
+      const tm = ctx.turnManager;
+      if (!tm) {
+        addSystemMessage("Snapshot system not available — no workspace initialized.");
+        break;
+      }
+      const snapshots = tm.getTurnSnapshots();
+      if (snapshots.length === 0) {
+        addSystemMessage("Nothing to undo — no turns with file changes recorded.");
+        break;
+      }
+      const lastSnapshot = snapshots[snapshots.length - 1]!;
+      const totalFiles = lastSnapshot.patch.added.length + lastSnapshot.patch.modified.length + lastSnapshot.patch.deleted.length;
+      if (totalFiles === 0) {
+        addSystemMessage("Last turn made no file changes.");
+        break;
+      }
+      setBusy(true);
+      try {
+        const targetTurn = snapshots.length >= 2 ? snapshots[snapshots.length - 2]!.turnIndex : lastSnapshot.turnIndex;
+        const result = await tm.revertToTurn(targetTurn);
+        const summary = [
+          `Reverted turn ${lastSnapshot.turnIndex}:`,
+          ...lastSnapshot.patch.added.map((f) => `  - removed ${f}`),
+          ...lastSnapshot.patch.modified.map((f) => `  ~ restored ${f}`),
+          ...lastSnapshot.patch.deleted.map((f) => `  + restored ${f}`),
+        ].join("\n");
+        addSystemMessage(summary);
+        if (workspacePath) {
+          const refreshed = await scanWorkspace(workspacePath);
+          startTransition(() => setWorkspaceFiles(refreshed.files));
+        }
+        if (workspacePath) {
+          await appendSessionEvent(workspacePath, sessionId, {
+            type: "snapshot.revert",
+            timestamp: new Date().toISOString(),
+            payload: { revertedTurns: result.revertedTurns, targetSnapshot: result.targetSnapshot },
+          });
+        }
+      } catch (err) {
+        addSystemMessage(`Undo failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+      break;
+    }
+    case "undo-history": {
+      const tm = ctx.turnManager;
+      if (!tm) {
+        addSystemMessage("Snapshot system not available — no workspace initialized.");
+        break;
+      }
+      const snapshots = tm.getTurnSnapshots();
+      if (snapshots.length === 0) {
+        addSystemMessage("No turns recorded.");
+        break;
+      }
+      const lines = snapshots.map((s) => {
+        const total = s.patch.added.length + s.patch.modified.length + s.patch.deleted.length;
+        const parts: string[] = [];
+        if (s.patch.added.length > 0) parts.push(`+${s.patch.added.length} added`);
+        if (s.patch.modified.length > 0) parts.push(`~${s.patch.modified.length} modified`);
+        if (s.patch.deleted.length > 0) parts.push(`-${s.patch.deleted.length} deleted`);
+        return `  Turn ${s.turnIndex}: ${total === 0 ? "no file changes" : parts.join(", ")}`;
+      });
+      addSystemMessage(`Snapshot history:\n${lines.join("\n")}\n\nUse /undo to revert the last turn.`);
       break;
     }
     case "exit": {

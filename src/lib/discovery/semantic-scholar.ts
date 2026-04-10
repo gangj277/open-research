@@ -12,6 +12,7 @@ const DEFAULT_FIELDS = [
   "citationCount",
   "influentialCitationCount",
   "referenceCount",
+  "abstract",
 ].join(",");
 
 interface SemanticScholarOpenAccessPdf {
@@ -36,6 +37,7 @@ interface SemanticScholarBulkPaperRecord {
   citationCount?: number | null;
   influentialCitationCount?: number | null;
   referenceCount?: number | null;
+  abstract?: string | null;
 }
 
 interface SemanticScholarBulkSearchResponse {
@@ -65,6 +67,7 @@ export interface SemanticScholarPaper {
   pdfUrl?: string;
   extractorUrl: string;
   externalIds: Record<string, string>;
+  abstract?: string;
 }
 
 export interface SemanticScholarSearchResult {
@@ -274,6 +277,7 @@ function normalizePaper(
     pdfUrl,
     extractorUrl: pdfUrl ?? sourceUrl,
     externalIds,
+    abstract: paper.abstract?.trim() || undefined,
   };
 }
 

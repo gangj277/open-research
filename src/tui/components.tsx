@@ -100,47 +100,6 @@ export function ThinkingIndicator({ frame, width }: { frame: string; width?: num
   );
 }
 
-// ── Task Panel ─────────────────────────────────────────────────────────────
-
-export function TaskPanel({
-  tasks,
-  frame,
-  width,
-}: {
-  tasks: Array<{ id: string; subject: string; activeForm?: string; status: string }>;
-  frame: string;
-  width?: number;
-}) {
-  const theme = useTheme();
-  const contentWidth = resolveWidth(width);
-  const completed = tasks.filter((t) => t.status === "completed");
-  const active = tasks.filter((t) => t.status !== "completed");
-
-  if (tasks.length === 0) return null;
-
-  return (
-    <Box flexDirection="column" marginBottom={1} marginLeft={2} width={indentedWidth(contentWidth)}>
-      {active.map((task) => {
-        const icon = task.status === "in_progress" ? frame : GUTTER.pending;
-        const color = task.status === "in_progress" ? theme.warning : theme.text;
-        const label = task.status === "in_progress"
-          ? (task.activeForm ?? task.subject)
-          : task.subject;
-        return (
-          <Text key={task.id} color={color}>
-            {"  "}{icon} {label}
-          </Text>
-        );
-      })}
-      {completed.length > 0 && (
-        <Text color={theme.muted} dimColor>
-          {"  "}{GUTTER.success} {completed.length} completed
-        </Text>
-      )}
-    </Box>
-  );
-}
-
 // ── Tool Activity Summary (collapsed / expanded) ───────────────────────────
 
 export const ToolActivitySummary = memo(function ToolActivitySummary({
@@ -939,7 +898,6 @@ export function FooterBar({
   tokenDisplay,
   workspaceName,
   mode,
-  planningStatus,
 }: {
   width?: number;
   busy: boolean;
@@ -951,11 +909,9 @@ export function FooterBar({
   tokenDisplay: string;
   workspaceName: string;
   mode: string;
-  planningStatus: string;
 }) {
   const theme = useTheme();
-  const modeLabel = mode === "auto-research" ? "auto" : mode === "auto-approve" ? "approve" : "review";
-  const planLabel = planningStatus !== "idle" ? ` · ${planningStatus}` : "";
+  const modeLabel = mode === "auto-approve" ? "approve" : "review";
   const countLabel = typeof toolCount === "number" && (toolCount > 0 || toolActivity.startsWith("Running"))
     ? ` (${toolCount} done)`
     : "";
@@ -966,7 +922,7 @@ export function FooterBar({
       : `${frame} thinking...`
     : `${GUTTER.active} ${statusParts.join(" · ")}`;
   const topRight = tokenDisplay ? `${tokenDisplay} · ${workspaceName}` : workspaceName;
-  const bottomLeft = `${modeLabel}${planLabel} · shift+tab cycle · /help`;
+  const bottomLeft = `${modeLabel} · shift+tab cycle · /help`;
   const bottomRight = "shift+enter newline · esc cancel";
   const rightColumnWidth = Math.max(14, Math.min(Math.floor(contentWidth * 0.4), contentWidth - 12));
   const leftColumnWidth = Math.max(1, contentWidth - rightColumnWidth - 1);

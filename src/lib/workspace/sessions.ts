@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getWorkspaceSessionsDir } from "@/lib/fs/paths";
 import type { LLMMessage } from "@/lib/llm/types";
+import type { TurnSnapshot } from "@/lib/snapshot/types";
 
 export interface SessionEvent {
   type: string;
@@ -33,6 +34,7 @@ export interface SavedSession {
 export interface RestoredSession {
   messages: Array<{ role: "user" | "assistant" | "system"; text: string }>;
   llmHistory: LLMMessage[];
+  turnSnapshots: TurnSnapshot[];
 }
 
 function parseEvents(raw: string): SessionEvent[] {
@@ -103,6 +105,7 @@ export async function loadSessionHistory(
 
   const messages: RestoredSession["messages"] = [];
   const llmHistory: LLMMessage[] = [];
+  const turnSnapshots: TurnSnapshot[] = [];
 
   for (const event of events) {
     if (event.type === "chat.turn") {
@@ -125,7 +128,13 @@ export async function loadSessionHistory(
         llmHistory.push(...payload.llmHistory);
       }
     }
+
+    // Restore turn snapshots for revert support
+    if (event.type === "snapshot.turn") {
+      const payload = event.payload as TurnSnapshot;
+      turnSnapshots.push(payload);
+    }
   }
 
-  return { messages, llmHistory };
+  return { messages, llmHistory, turnSnapshots };
 }

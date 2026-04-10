@@ -2,6 +2,7 @@ import type { DiscoveredSource } from "@/lib/discovery/scholarly-search";
 import type { PaperQualityMeta } from "@/lib/discovery/paper-quality";
 import type { SearchFilterConfig } from "@/lib/discovery/search-filters";
 import type { LLMMessage } from "@/lib/llm/types";
+import type { SnapshotPatch } from "@/lib/snapshot/types";
 
 // ── Proposed Update (file edit / new file) ──
 
@@ -37,52 +38,9 @@ export interface AskUserAnswer {
   isCustom: boolean;
 }
 
-// ── Task Decomposition ──
-
-export type TaskMode = "inline" | "isolated";
-export type TaskStatus = "pending" | "active" | "completed";
-
-export interface TaskDefinition {
-  id: string;
-  objective: string;
-  context_keys?: string[];
-  depends_on?: string[];
-  mode?: TaskMode;
-}
-
-export interface TaskState extends TaskDefinition {
-  status: TaskStatus;
-  result?: string;
-}
-
-export interface TaskPlan {
-  tasks: TaskState[];
-  activeTaskId?: string;
-  created: number;
-}
-
 // ── Agent Modes ──
 
-export type AgentMode = "manual-review" | "auto-approve" | "auto-research";
-
-export type PlanningPhaseStatus = "idle" | "planning" | "charter-review";
-
-export interface ResearchCharter {
-  id: string;
-  researchQuestion: string;
-  successCriteria: string[];
-  scopeBoundaries: string[];
-  knownStartingPoints: string[];
-  proposedSteps: string[];
-  rawMarkdown: string;
-  createdAt: string;
-}
-
-export interface PlanningState {
-  status: PlanningPhaseStatus;
-  charter?: ResearchCharter;
-  planningHistory: LLMMessage[];
-}
+export type AgentMode = "manual-review" | "auto-approve";
 
 // ── Context Compaction ──
 
@@ -94,14 +52,12 @@ export interface CompactionSnapshot {
   openLoops: string[];
   nextStepHint?: string;
   activatedSkills: string[];
-  taskPlan?: TaskPlan;
   estimatedTokensAfter: number;
   compactedAt: string;
 }
 
 export interface AgentContinuationState {
   activeSkills: string[];
-  taskPlan?: TaskPlan;
   compactionSnapshot?: CompactionSnapshot;
 }
 
@@ -195,8 +151,8 @@ export type SSEEvent =
       snapshot?: CompactionSnapshot;
     }
   | { type: "ask_user"; question: AskUserQuestion }
-  | { type: "task_plan"; tasks: TaskState[] }
-  | { type: "task_update"; taskId: string; status: TaskStatus; result?: string }
+  | { type: "snapshot_taken"; turnIndex: number; hash: string; patch: SnapshotPatch }
+  | { type: "snapshot_reverted"; revertedTurns: number[]; filesRestored: string[] }
   | { type: "error"; message: string }
   | { type: "done"; usage?: TokenUsage };
 
@@ -210,5 +166,4 @@ export interface AgentState {
   compactionSnapshot?: CompactionSnapshot;
   totalTokens: number;
   iterations: number;
-  taskPlan?: TaskPlan;
 }

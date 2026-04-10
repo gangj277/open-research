@@ -30,7 +30,7 @@ export interface InitWorkspaceOptions {
   title?: string;
 }
 
-const MANAGED_DIRS = ["sources", "notes", "artifacts", "papers", "experiments"] as const;
+const MANAGED_DIRS = ["sources", "notes", "artifacts", "papers", "experiments", "run"] as const;
 
 export async function initWorkspace(
   options: InitWorkspaceOptions

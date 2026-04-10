@@ -271,8 +271,9 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     function: {
       name: "web_search",
       description:
-        "Search the web via DuckDuckGo, fetch top results, and extract structured findings " +
-        "relative to the target. Use for non-academic sources: documentation, blog posts, " +
+        "Search the web, fetch top results, and extract structured findings " +
+        "relative to the target. Automatically generates adversarial queries to find " +
+        "contradicting evidence. Use for non-academic sources: documentation, blog posts, " +
         "datasets, reports, news. For academic papers, use search_external_sources.",
       parameters: {
         type: "object",
@@ -283,16 +284,21 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
               "The research claim or question to evaluate results against. " +
               "Be specific: 'How to configure num_workers in PyTorch DataLoader for multi-GPU' not 'PyTorch'.",
           },
+          queries: {
+            type: "array",
+            items: { type: "string" },
+            description: "Search queries. Multiple queries broaden coverage. Adversarial queries are auto-generated.",
+          },
           query: {
             type: "string",
-            description: "The web search query.",
+            description: "Single search query (alternative to queries array for backward compatibility).",
           },
           num_results: {
             type: "number",
             description: "Maximum pages to fetch and analyze. Default: 5, max: 8.",
           },
         },
-        required: ["target", "query"],
+        required: ["target"],
         additionalProperties: false,
       },
     },
@@ -418,37 +424,44 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
     function: {
       name: "launch_subagent",
       description:
-        "Launch a specialized sub-agent to handle a task autonomously. " +
-        "The sub-agent runs independently with its own context window and returns a concise summary. " +
-        "Use this to delegate exploration instead of reading files yourself.\n\n" +
+        "Launch a sub-agent to handle a task autonomously with its own context window. " +
+        "Returns a structured handoff report with summary, files created/modified, and key findings.\n\n" +
         "Available types:\n" +
-        "- \"explore\": Navigates the codebase/workspace with read_file, list_directory, search_workspace. Returns conclusion-oriented findings.\n\n" +
+        "- \"explore\": Read-only workspace exploration. Uses read_file, list_directory, search_workspace.\n" +
+        "- \"research\": Write-capable research agent. Can search papers, run code, write files, traverse citations. " +
+        "Optionally loaded with a skill workflow.\n\n" +
         "IMPORTANT: The sub-agent has ZERO context from this conversation. " +
-        "You must write self-contained, detailed instructions in goal and context. " +
-        "Vague goals produce vague results.",
+        "Write detailed, self-contained instructions in goal and context.",
       parameters: {
         type: "object",
         properties: {
           type: {
             type: "string",
-            enum: ["explore"],
-            description: "The type of sub-agent to launch.",
+            enum: ["explore", "research"],
+            description: "The type of sub-agent. Use 'research' for tasks that require writing files, searching papers, or running code.",
+          },
+          skill: {
+            type: "string",
+            description:
+              "Optional skill to load as the sub-agent's workflow template. " +
+              "Available: source-scout, experiment-designer, data-analyst, devils-advocate, " +
+              "methodology-critic, evidence-adjudicator, novelty-checker, paper-explainer, " +
+              "draft-paper, reviewer-response. When provided, type defaults to 'research'.",
           },
           goal: {
             type: "string",
             description:
-              "Detailed, self-contained description of what to find. " +
-              "Include: (1) exactly what information you need, (2) specific file paths, function names, or patterns you already know, " +
-              "(3) what form the answer should take (e.g. 'list all endpoints with their HTTP methods and file locations'). " +
+              "Detailed, self-contained description of the task. " +
+              "Include: (1) exactly what to accomplish, (2) what files or data to use, " +
+              "(3) what output to produce and where to write it. " +
               "The more specific you are, the better the result.",
           },
           context: {
             type: "string",
             description:
-              "Background the sub-agent needs to understand WHY you need this and WHERE to look. " +
-              "Include: what you already know, what you've already checked, what to skip, " +
-              "and any constraints. E.g. 'I already know auth tokens are in ~/.open-research/auth.json. " +
-              "I need to understand the refresh flow. Focus on src/lib/auth/ and src/lib/llm/.'",
+              "Background the sub-agent needs. Include: what you already know, " +
+              "what's already in the workspace, what to build on or avoid, " +
+              "and any constraints or preferences from the user.",
           },
         },
         required: ["type", "goal"],
@@ -456,65 +469,25 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
       },
     },
   },
-  // ── Task Tracking ────────────────────────────────────────────────────
+  // ── Current Task Focus ────────────────────────────────────────────────
   {
     type: "function",
     function: {
-      name: "create_tasks",
+      name: "set_current_task",
       description:
-        "Create research tasks to track multi-step work. Only use when work involves 3+ distinct steps. " +
-        "Tasks are shown to the user as a progress checklist and injected into your context on every turn. " +
-        "Don't create tasks for simple requests (one search, one file read, quick answer).",
+        "Set your current task/focus. This is injected into your context on every turn so you always " +
+        "know what you're working on. Update it as you move through your plan. " +
+        "Use a short imperative phrase: 'Searching for scaling law papers', " +
+        "'Writing literature review section', 'Running experiment analysis'.",
       parameters: {
         type: "object",
         properties: {
-          tasks: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                subject: {
-                  type: "string",
-                  description: "Imperative title: 'Search for X', 'Analyze Y', 'Write Z'",
-                },
-                activeForm: {
-                  type: "string",
-                  description: "Present continuous for spinner: 'Searching for X...'. Optional — falls back to subject.",
-                },
-              },
-              required: ["subject"],
-              additionalProperties: false,
-            },
-            description: "Array of tasks to create.",
-          },
-        },
-        required: ["tasks"],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_task",
-      description:
-        "Update a task's status or details. " +
-        "Set in_progress BEFORE starting work. Set completed IMMEDIATELY after finishing. " +
-        "Only mark completed when fully done — not if work is partial or errored. " +
-        "Use deleted to remove tasks no longer needed. Change subject to rewrite the plan.",
-      parameters: {
-        type: "object",
-        properties: {
-          taskId: { type: "string", description: "The 8-char task ID" },
-          status: {
+          task: {
             type: "string",
-            enum: ["pending", "in_progress", "completed", "deleted"],
-            description: "New status. Lifecycle: pending → in_progress → completed. Use deleted to remove.",
+            description: "Short description of your current focus.",
           },
-          subject: { type: "string", description: "Rewrite the task title" },
-          activeForm: { type: "string", description: "Change spinner text shown during in_progress" },
         },
-        required: ["taskId"],
+        required: ["task"],
         additionalProperties: false,
       },
     },
@@ -567,6 +540,40 @@ export const TOOL_SCHEMAS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "traverse_citations",
+      description:
+        "Follow citation chains from a known paper. Use 'references' to find foundational work " +
+        "this paper builds on, or 'citations' to find later work that built on it. " +
+        "Use after search_external_sources identifies a key paper — traverse its citations to " +
+        "discover the research lineage, find replication studies, or identify the seminal papers in the field. " +
+        "Results are sorted by citation count (most influential first).",
+      parameters: {
+        type: "object",
+        properties: {
+          paper_id: {
+            type: "string",
+            description:
+              "Paper identifier: Semantic Scholar ID, DOI (e.g. '10.1234/...'), or arXiv ID (e.g. '2301.12345'). " +
+              "Use identifiers from search_external_sources results.",
+          },
+          direction: {
+            type: "string",
+            enum: ["references", "citations"],
+            description: "'references' = papers this paper cites (go backward in time). 'citations' = papers that cite this paper (go forward in time).",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results. Default: 10.",
+          },
+        },
+        required: ["paper_id", "direction"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 const TOOL_META: Record<string, ToolMeta> = {
@@ -585,8 +592,8 @@ const TOOL_META: Record<string, ToolMeta> = {
   run_command: { parallelSafe: false },
   ask_user: { parallelSafe: false },
   create_paper: { parallelSafe: false },
-  create_tasks: { parallelSafe: true },
-  update_task: { parallelSafe: true },
+  traverse_citations: { parallelSafe: true },
+  set_current_task: { parallelSafe: true },
   web_search: { parallelSafe: true },
   query_ontology: { parallelSafe: true },
   ontology_status: { parallelSafe: true },
@@ -596,24 +603,4 @@ export function isParallelSafe(toolName: string): boolean {
   return TOOL_META[toolName]?.parallelSafe ?? false;
 }
 
-// ── Tool Filtering for Planning Mode ──
 
-const PLANNING_TOOL_NAMES = new Set([
-  "read_file",
-  "read_pdf",
-  "list_directory",
-  "search_workspace",
-  "fetch_url",
-  "search_external_sources",
-  "web_search",
-  "load_skill",
-  "read_skill_reference",
-  "ask_user",
-]);
-
-export function getToolsForMode(mode: "planning" | "full"): ToolDefinition[] {
-  if (mode === "planning") {
-    return TOOL_SCHEMAS.filter((t) => PLANNING_TOOL_NAMES.has(t.function.name));
-  }
-  return TOOL_SCHEMAS;
-}

@@ -10,7 +10,7 @@ import React, {
 import { Box, Static, Text, useApp, useInput } from "ink";
 import TextInput from "@/tui/text-input";
 import { ThemeProvider, getThemeColors } from "@/tui/theme";
-import type { ProposedUpdate, AgentMode, PlanningState } from "@/lib/agent/state";
+import type { ProposedUpdate, AgentMode } from "@/lib/agent/state";
 import type { LLMMessage } from "@/lib/llm/types";
 import { scanWorkspace } from "@/lib/workspace/scan";
 import { createProviderFromStoredAuth } from "@/lib/llm/provider-factory";
@@ -31,7 +31,7 @@ import { hasConfiguredProvider } from "@/lib/llm/provider-resolution";
 import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { SessionPicker } from "@/tui/session-picker";
 import { getPendingQuestion, clearPendingQuestion, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
-import { initTaskStore, getVisibleTasks, clearAllTasks, type Task } from "@/lib/agent/tools/tasks";
+import { clearCurrentTask } from "@/lib/agent/tools/current-task";
 import { getPackageVersion } from "@/lib/cli/version";
 import { getContextWindow } from "@/lib/agent/context-manager";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
@@ -39,6 +39,7 @@ import { checkForUpdate } from "@/lib/cli/update-check";
 import type { PreviewServer } from "@/lib/preview/server";
 import { themeValues } from "@/lib/config/store";
 import type { SubAgentProgress } from "@/lib/agent/subagent";
+import { TurnManager } from "@/lib/snapshot";
 import {
   matchSlashCommand,
   getUnifiedSuggestions,
@@ -58,7 +59,6 @@ import {
   SuggestionDropdown,
   PromptPrefix,
   FooterBar,
-  TaskPanel,
   ThinkingIndicator,
   type SuggestionItem,
 } from "@/tui/components";
@@ -74,7 +74,6 @@ import { useAnimatedFrame } from "@/tui/hooks/use-animated-frame";
 import { useTerminalWidth } from "@/tui/hooks/use-terminal-width";
 import { executeSlashCommand, type SlashCommandContext } from "@/tui/hooks/use-slash-commands";
 import { buildToolSummary } from "@/tui/helpers/tool-summary";
-import { parseCharterYaml } from "@/tui/helpers/charter";
 import { renderConversationMessages } from "@/tui/helpers/render-message";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -97,6 +96,8 @@ export function App({
 }) {
   const app = useApp();
   const abortRef = useRef<AbortController | null>(null);
+  const turnManagerRef = useRef<TurnManager | null>(null);
+  const turnIndexRef = useRef(0);
   const [input, setInput] = useState("");
   const [composerFocused, setComposerFocused] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -117,17 +118,11 @@ export function App({
   const [latchedToolCount, setLatchedToolCount] = useState(0);
   const [subAgentProgress, setSubAgentProgress] = useState<Record<string, SubAgentProgress>>({});
   const [toolActivityExpanded, setToolActivityExpanded] = useState(false);
-  const [taskPanelVisible, setTaskPanelVisible] = useState(true);
-  const [taskVersion, setTaskVersion] = useState(0);
   const turnToolLogRef = useRef<Array<{ name: string; description: string; durationMs?: number }>>([]);
   const [sessionTokens, setSessionTokens] = useState<SessionTokenUsage>(() => createSessionUsage());
   const [tokenDisplay, setTokenDisplay] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [agentMode, setAgentMode] = useState<AgentMode>("manual-review");
-  const [planningState, setPlanningState] = useState<PlanningState>({
-    status: "idle",
-    planningHistory: [],
-  });
   const [theme, setTheme] = useState<Theme>("dark");
   const [config, setConfig] = useState<OpenResearchConfig | null>(null);
   const [cursorToEnd, setCursorToEnd] = useState(0);
@@ -253,9 +248,11 @@ export function App({
       if (cancelled) return;
       startTransition(() => setWorkspaceFiles(result.files));
     });
-    void initTaskStore(workspacePath, sessionId).then(() => {
-      if (!cancelled) setTaskVersion((v) => v + 1);
-    });
+    // Initialize snapshot system
+    const tm = new TurnManager(workspacePath);
+    turnManagerRef.current = tm;
+    turnIndexRef.current = 0;
+    void tm.init().then(() => tm.gc()).catch(() => {});
     return () => { cancelled = true; };
   }, [workspacePath, sessionId]);
 
@@ -382,8 +379,9 @@ export function App({
     sessionId, sessionTokens, agentMode, previewRef,
     addSystemMessage, replaceMessages, setBusy, setAuthStatus, setWorkspacePath, setWorkspaceFiles,
     setConfig, setTheme, setAgentMode, setHistory, setActiveSkills, setPendingUpdates,
-    setStatusLine, setPlanningState, setTokenDisplay: setTokenDisplay,
+    setStatusLine, setTokenDisplay: setTokenDisplay,
     setScreen, setComposerFocused, setResumeSessions, exitApp: () => app.exit(),
+    turnManager: turnManagerRef.current,
   };
 
   // ── Pending update review ───────────────────────────────────────────────
@@ -457,69 +455,6 @@ export function App({
     setComposerFocused(true);
   }
 
-  // ── Charter management ────────────────────────────────────────────────
-
-  async function approveCharter() {
-    if (!planningState.charter || !workspacePath) return;
-    const charter = planningState.charter;
-
-    const charterContent = [
-      `# Research Charter`,
-      "",
-      `## Research Question`,
-      charter.researchQuestion,
-      "",
-      `## Success Criteria`,
-      ...charter.successCriteria.map((c) => `- ${c}`),
-      "",
-      `## Scope Boundaries`,
-      ...charter.scopeBoundaries.map((b) => `- ${b}`),
-      "",
-      `## Known Starting Points`,
-      ...charter.knownStartingPoints.map((s) => `- ${s}`),
-      "",
-      `## Proposed Steps`,
-      ...charter.proposedSteps.map((s, i) => `${i + 1}. ${s}`),
-      "",
-      `---`,
-      `Created: ${charter.createdAt}`,
-    ].join("\n");
-
-    const charterUpdate: ProposedUpdate = {
-      id: charter.id,
-      type: "new",
-      key: `path:artifacts/research-charter-${charter.id.slice(0, 8)}.md`,
-      label: "Research Charter",
-      content: charterContent,
-      summary: `Research charter: ${charter.researchQuestion}`,
-    };
-
-    await applyProposedUpdate(workspacePath, charterUpdate);
-    await appendSessionEvent(workspacePath, sessionId, {
-      type: "charter.approved",
-      timestamp: new Date().toISOString(),
-      payload: { charterId: charter.id },
-    });
-
-    const refreshed = await scanWorkspace(workspacePath);
-    startTransition(() => setWorkspaceFiles(refreshed.files));
-
-    addSystemMessage("Charter approved and saved to workspace.");
-    addSystemMessage("RALPH loop ready. (Implementation coming soon — for now, use regular chat to continue research based on the charter.)");
-    setPlanningState((prev) => ({ ...prev, status: "idle" }));
-  }
-
-  function rejectCharter() {
-    if (!planningState.charter || !workspacePath) return;
-    void appendSessionEvent(workspacePath, sessionId, {
-      type: "charter.rejected",
-      timestamp: new Date().toISOString(),
-      payload: { charterId: planningState.charter.id },
-    });
-    setPlanningState({ status: "idle", planningHistory: [] });
-    addSystemMessage("Charter cancelled. Planning reset.");
-  }
-
   // ── Keyboard input ────────────────────────────────────────────────────
 
   useInput((key, inputKey) => {
@@ -534,11 +469,6 @@ export function App({
       if (screen !== "main") {
         clearCtrlCPending();
         returnToMainScreen();
-        return;
-      }
-      if (planningState.status === "charter-review") {
-        clearCtrlCPending();
-        rejectCharter();
         return;
       }
       if (ctrlCPending) {
@@ -558,13 +488,9 @@ export function App({
       setToolActivityExpanded((prev) => !prev);
       return;
     }
-    if (inputKey.ctrl && key === "t") {
-      setTaskPanelVisible((prev) => !prev);
-      return;
-    }
     if (inputKey.shift && inputKey.tab) {
       setAgentMode((prev) => {
-        const modes: AgentMode[] = ["manual-review", "auto-approve", "auto-research"];
+        const modes: AgentMode[] = ["manual-review", "auto-approve"];
         const idx = (modes.indexOf(prev) + 1) % modes.length;
         const next = modes[idx]!;
         addSystemMessage(`Mode: ${next} (shift+tab to cycle)`);
@@ -575,23 +501,12 @@ export function App({
     if (inputKey.escape) {
       if (busy && abortRef.current) {
         abortRef.current.abort();
-      } else if (planningState.status === "charter-review") {
-        rejectCharter();
       } else {
         setComposerFocused(false);
       }
       return;
     }
     if (!composerFocused) {
-      if (planningState.status === "charter-review") {
-        if (key === "a") { void approveCharter(); return; }
-        if (key === "p") {
-          setPlanningState((prev) => ({ ...prev, status: "planning" }));
-          setComposerFocused(true);
-          addSystemMessage("Continue planning — type your feedback to refine the charter.");
-          return;
-        }
-      }
       // When PendingUpdateCard or QuestionCard is active, let them handle all input
       if ((pendingUpdates.length > 0 && !agentQuestion) || agentQuestion) return;
       if (key === "i" || (key.length === 1 && !inputKey.ctrl && !inputKey.meta && !inputKey.tab)) {
@@ -647,17 +562,6 @@ export function App({
       return;
     }
 
-    if (agentMode === "auto-research") {
-      if (planningState.status === "charter-review") {
-        addSystemMessage(`> ${trimmed}`);
-        setPlanningState((prev) => ({ ...prev, status: "planning" }));
-        void sendToPlanningAgent(trimmed);
-        return;
-      }
-      void sendToPlanningAgent(trimmed);
-      return;
-    }
-
     void sendToAgent(trimmed);
   }
 
@@ -682,6 +586,12 @@ export function App({
     });
 
     try {
+      // Snapshot: capture state before the turn
+      const currentTurnIndex = turnIndexRef.current++;
+      const tm = turnManagerRef.current;
+      // Fire-and-forget: don't block agent turn on git operations
+      tm?.beginTurn(currentTurnIndex).catch(() => {});
+
       const provider = await createProviderFromStoredAuth({ homeDir });
       const workspace = await scanWorkspace(workspacePath);
       const workspaceContext = {
@@ -732,10 +642,6 @@ export function App({
               durationMs: activity.durationMs,
             });
             setTurnToolCount(turnToolLogRef.current.length);
-            // Refresh task panel when task tools complete
-            if (activity.name === "create_tasks" || activity.name === "update_task") {
-              setTaskVersion((v) => v + 1);
-            }
           }
         },
         onSubAgentProgress: (progress) => {
@@ -789,7 +695,7 @@ export function App({
 
       const reviewRequired: ProposedUpdate[] = [];
       for (const update of result.proposedUpdates) {
-        if (agentMode === "auto-approve" || agentMode === "auto-research") {
+        if (agentMode === "auto-approve") {
           await applyProposedUpdate(workspacePath, update);
         } else {
           const policy = classifyUpdateRisk(update);
@@ -816,6 +722,17 @@ export function App({
         },
       });
 
+      // Snapshot: capture state after the turn (fire-and-forget)
+      tm?.endTurn(currentTurnIndex).then((turnSnapshot) => {
+        if (turnSnapshot && workspacePath) {
+          void appendSessionEvent(workspacePath, sessionId, {
+            type: "snapshot.turn",
+            timestamp: new Date().toISOString(),
+            payload: turnSnapshot as unknown as Record<string, unknown>,
+          });
+        }
+      }).catch(() => {});
+
       const refreshed = await scanWorkspace(workspacePath);
       startTransition(() => {
         setWorkspaceFiles(refreshed.files);
@@ -827,6 +744,8 @@ export function App({
       });
     } catch (error) {
       streamBuffer?.flush();
+      // Still take end snapshot on error (partial changes may have occurred via run_command)
+      tm?.endTurn(currentTurnIndex).catch(() => {});
       if (!controller.signal.aborted) {
         startTransition(() => {
           setMessages((current) => [
@@ -850,105 +769,6 @@ export function App({
       }
       if (controller.signal.aborted) {
         return;
-      }
-    }
-  }
-
-  // ── Planning agent (auto-research mode) ─────────────────────────────────
-
-  async function sendToPlanningAgent(message: string) {
-    if (!workspacePath) return;
-    const controller = new AbortController();
-    let streamBuffer: ReturnType<typeof createSentenceStreamBuffer> | null = null;
-    abortRef.current = controller;
-    setBusy(true);
-
-    setPlanningState((prev) => {
-      if (prev.status === "idle") {
-        addSystemMessage("Starting auto-research planning...");
-        return { ...prev, status: "planning" };
-      }
-      return prev;
-    });
-
-    startTransition(() => {
-      setMessages((current) => [...current, { role: "user", text: message }]);
-    });
-
-    try {
-      const provider = await createProviderFromStoredAuth({ homeDir });
-      const workspace = await scanWorkspace(workspacePath);
-      const workspaceContext = {
-        workspaceDir: workspacePath!,
-        runId: sessionId,
-        workspaceFiles: Object.fromEntries(workspace.files.map((f) => [f.key, f.content])),
-        availableKeys: workspace.files.map((f) => f.key),
-        fileLabels: Object.fromEntries(workspace.files.map((f) => [f.key, f.label])),
-      };
-
-      let assistantText = "";
-      streamBuffer = createSentenceStreamBuffer({
-        onFlush: (text) => { addAssistantMessage(text); },
-      });
-      const result = await runAgentTurn({
-        provider,
-        message,
-        history: planningState.planningHistory,
-        workspace: workspaceContext,
-        homeDir,
-        model: config?.defaults.model,
-        reasoningEffort: config?.defaults.reasoningEffort,
-        mode: "planning",
-        activeSkills,
-        signal: controller.signal,
-        onTextDelta: (chunk) => {
-          assistantText += chunk;
-          streamBuffer?.push(chunk);
-        },
-      });
-      streamBuffer.flush();
-
-      setPlanningState((prev) => ({
-        ...prev,
-        planningHistory: [
-          ...prev.planningHistory,
-          { role: "user" as const, content: message },
-          { role: "assistant" as const, content: assistantText || result.text },
-        ],
-      }));
-
-      if (result.detectedCharter) {
-        const charter = parseCharterYaml(result.detectedCharter);
-        setPlanningState((prev) => ({ ...prev, status: "charter-review", charter }));
-
-        if (workspacePath) {
-          await appendSessionEvent(workspacePath, sessionId, {
-            type: "charter.generated",
-            timestamp: new Date().toISOString(),
-            payload: { charterId: charter.id, researchQuestion: charter.researchQuestion },
-          });
-        }
-      }
-
-      startTransition(() => { setActiveSkills(result.activeSkills); });
-    } catch (error) {
-      streamBuffer?.flush();
-      if (!controller.signal.aborted) {
-        startTransition(() => {
-          setMessages((current) => [
-            ...current,
-            { role: "system", text: `Error: ${error instanceof Error ? `${error.message}\n${error.stack}` : String(error)}` },
-          ]);
-        });
-      }
-    } finally {
-      streamBuffer?.dispose();
-      abortRef.current = null;
-      setBusy(false);
-      setComposerFocused(true);
-      if (controller.signal.aborted) {
-        setPlanningState((prev) => ({ ...prev, status: "idle" }));
-        addSystemMessage("Planning interrupted.");
       }
     }
   }
@@ -982,7 +802,7 @@ export function App({
     { key: "defaults.model", label: "Model", values: [...getAvailableModels()], current: config?.defaults.model ?? "gpt-5.4" },
     { key: "theme", label: "Theme", values: [...themeValues], current: theme },
     { key: "defaults.reasoningEffort", label: "Reasoning effort", values: ["low", "medium", "high", "xhigh"], current: config?.defaults.reasoningEffort ?? "medium" },
-    { key: "agentMode", label: "Agent mode", values: ["manual-review", "auto-approve", "auto-research"], current: agentMode },
+    { key: "agentMode", label: "Agent mode", values: ["manual-review", "auto-approve"], current: agentMode },
   ], [config, theme, agentMode]);
 
   async function handleConfigUpdate(key: string, value: string) {
@@ -1015,10 +835,13 @@ export function App({
             try {
               const restored = await loadSessionHistory(workspacePath!, session.id);
               setSessionId(session.id);
-              await initTaskStore(workspacePath!, session.id);
-              setTaskVersion((version) => version + 1);
               replaceMessages(restored.messages);
               startTransition(() => setHistory(restored.llmHistory));
+              // Rehydrate snapshot system from persisted turn snapshots
+              if (restored.turnSnapshots.length > 0 && turnManagerRef.current) {
+                turnManagerRef.current.rehydrate(restored.turnSnapshots);
+                turnIndexRef.current = Math.max(...restored.turnSnapshots.map((s) => s.turnIndex)) + 1;
+              }
               addSystemMessage(`Resumed session (${session.turnCount} turns). Continue where you left off.`);
             } catch (err) {
               addSystemMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1084,14 +907,6 @@ export function App({
             />
           ))}
 
-          {taskPanelVisible && getVisibleTasks().length > 0 && (
-            <TaskPanel
-              tasks={getVisibleTasks()}
-              frame={activityFrame}
-              width={contentWidth}
-            />
-          )}
-
           {visiblePendingUpdates.length > 0 && (
             <PendingUpdateCard
               count={pendingUpdates.length}
@@ -1115,47 +930,6 @@ export function App({
               }}
               width={contentWidth}
             />
-          )}
-
-          {planningState.status === "charter-review" && planningState.charter && (
-            <Box borderStyle="round" borderColor={themeColors.warning} paddingX={1} marginBottom={1} flexDirection="column" width={contentWidth}>
-              <Text bold color={themeColors.warning}>Research Charter — Review</Text>
-              <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
-                <Text bold color={themeColors.text}>Question: </Text>
-                <Box width={panelInnerWidth}>
-                  <Text color={themeColors.text} wrap="wrap">{planningState.charter.researchQuestion}</Text>
-                </Box>
-              </Box>
-              {planningState.charter.successCriteria.length > 0 && (
-                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
-                  <Text bold color={themeColors.text}>Success Criteria:</Text>
-                  {planningState.charter.successCriteria.map((c, i) => (
-                    <Box key={`sc-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  - {c}</Text></Box>
-                  ))}
-                </Box>
-              )}
-              {planningState.charter.scopeBoundaries.length > 0 && (
-                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
-                  <Text bold color={themeColors.text}>Scope Boundaries:</Text>
-                  {planningState.charter.scopeBoundaries.map((b, i) => (
-                    <Box key={`sb-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  - {b}</Text></Box>
-                  ))}
-                </Box>
-              )}
-              {planningState.charter.proposedSteps.length > 0 && (
-                <Box marginTop={1} flexDirection="column" width={panelInnerWidth}>
-                  <Text bold color={themeColors.text}>Proposed Steps:</Text>
-                  {planningState.charter.proposedSteps.map((s, i) => (
-                    <Box key={`ps-${i}`} width={panelBodyWidth}><Text color={themeColors.muted} wrap="wrap">  {i + 1}. {s}</Text></Box>
-                  ))}
-                </Box>
-              )}
-              <Box marginTop={1} width={panelInnerWidth}>
-                <Text color={themeColors.muted} dimColor wrap="wrap">
-                  Press <Text bold color={themeColors.secondary}>a</Text> to approve · <Text bold color={themeColors.accent}>p</Text> to keep planning · <Text bold color={themeColors.error}>Esc</Text> to cancel
-                </Text>
-              </Box>
-            </Box>
           )}
 
           {dropdownVisible && (
@@ -1206,8 +980,8 @@ export function App({
           </Box>
 
           <Box marginTop={0}>
-            <Text color={agentMode === "auto-research" ? themeColors.warning : themeColors.muted} dimColor={agentMode === "manual-review"}>
-              {"‖ "}{agentMode}{planningState.status !== "idle" ? ` (${planningState.status})` : ""}{" (shift+tab to cycle)"}
+            <Text color={themeColors.muted} dimColor={agentMode === "manual-review"}>
+              {"‖ "}{agentMode}{" (shift+tab to cycle)"}
             </Text>
           </Box>
 
@@ -1222,7 +996,6 @@ export function App({
             tokenDisplay={tokenDisplay}
             workspaceName={hasWorkspace ? path.basename(workspacePath!) : process.cwd()}
             mode={agentMode}
-            planningStatus={planningState.status}
           />
         </Box>
       )}

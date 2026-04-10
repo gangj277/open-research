@@ -50,6 +50,7 @@ export function mergeAndRankCandidates(
 
     // Merge metadata as before
     existing.pdfUrl = existing.pdfUrl ?? candidate.pdfUrl;
+    existing.abstract = existing.abstract ?? candidate.abstract;
     existing.url = existing.url || candidate.url;
     existing.publishedDate = existing.publishedDate ?? candidate.publishedDate;
     existing.author = existing.author ?? candidate.author;

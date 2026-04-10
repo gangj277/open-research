@@ -40,3 +40,7 @@ export function getWorkspaceProjectFile(workspaceDir: string): string {
 export function getWorkspaceSessionsDir(workspaceDir: string): string {
   return path.join(getWorkspaceMetaDir(workspaceDir), "sessions");
 }
+
+export function getWorkspaceSnapshotDir(workspaceDir: string): string {
+  return path.join(getWorkspaceMetaDir(workspaceDir), "snapshots");
+}

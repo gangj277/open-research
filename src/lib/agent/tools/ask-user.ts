@@ -1,5 +1,13 @@
 import type { AskUserQuestion, AskUserAnswer } from "../state";
 
+// ── QuestionBridge ────────────────────────────────────────────────────────
+// Injectable interface for ask_user. Server implements with Deferred + bus.
+// Default: module-level queue (backward compat for direct TUI usage).
+
+export interface QuestionBridge {
+  createQuestion(question: AskUserQuestion): Promise<AskUserAnswer>;
+}
+
 export interface AskUserPendingQuestion {
   question: AskUserQuestion;
   resolve: (answer: AskUserAnswer) => void;
@@ -61,7 +69,8 @@ function normalizeQuestions(args: AskUserArgs): QuestionItem[] {
  */
 export async function executeAskUser(
   args: AskUserArgs,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  bridge?: QuestionBridge
 ): Promise<string> {
   const items = normalizeQuestions(args);
   if (items.length === 0) {
@@ -83,21 +92,29 @@ export async function executeAskUser(
       allowCustom: true,
     };
 
-    const answer = await new Promise<AskUserAnswer>((resolve, reject) => {
-      pendingQuestions.push({ question, resolve });
+    let answer: AskUserAnswer;
 
-      if (signal) {
-        const onAbort = () => {
-          pendingQuestions = pendingQuestions.filter((q) => q.question.id !== questionId);
-          reject(new Error("Question cancelled — user interrupted."));
-        };
-        if (signal.aborted) {
-          onAbort();
-          return;
+    if (bridge) {
+      // Use injected bridge (server mode)
+      answer = await bridge.createQuestion(question);
+    } else {
+      // Use module-level queue (legacy TUI mode)
+      answer = await new Promise<AskUserAnswer>((resolve, reject) => {
+        pendingQuestions.push({ question, resolve });
+
+        if (signal) {
+          const onAbort = () => {
+            pendingQuestions = pendingQuestions.filter((q) => q.question.id !== questionId);
+            reject(new Error("Question cancelled — user interrupted."));
+          };
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
         }
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
+      });
+    }
 
     const prefix = items.length > 1
       ? `Q${answers.length + 1}: "${item.question}" → `

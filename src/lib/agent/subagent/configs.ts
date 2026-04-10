@@ -50,10 +50,74 @@ const exploreConfig: SubAgentConfig = {
   ].join("\n"),
 };
 
+// ── Research Agent ────────────────────────────────────────────────────────
+// Write-capable agent that executes research workflows. Optionally loaded
+// with a skill (SKILL.md) as its primary workflow template.
+
+const researchConfig: SubAgentConfig = {
+  id: "research",
+  name: "Research Agent",
+  model: undefined, // Resolved at runtime (uses the primary model, not background)
+  reasoningEffort: "high",
+  allowedTools: new Set([
+    "read_file",
+    "read_pdf",
+    "list_directory",
+    "search_workspace",
+    "write_new_file",
+    "update_existing_file",
+    "run_command",
+    "fetch_url",
+    "search_external_sources",
+    "web_search",
+    "traverse_citations",
+    "load_skill",
+    "read_skill_reference",
+    "finish_subagent",
+  ]),
+  maxIterations: 75,
+  buildSystemPrompt: (workspaceRoot: string, skillPrompt?: string) => {
+    const sections = [
+      "You are a research agent executing a delegated task. Work autonomously until complete. You cannot ask questions — if blocked, call `finish_subagent` with status 'blocked'.",
+      "",
+      "## Execution Rules",
+      "- Your `goal` and `context` are your complete briefing. Re-read them before every decision.",
+      "- Work until the goal is fully achieved or you're genuinely stuck.",
+      "- Write all outputs to workspace files — your text responses are discarded; only files and the handoff report survive.",
+      "- Search adversarially: your search tools auto-generate contradicting queries, but you should still seek disconfirming evidence explicitly.",
+      "- When running code, verify output. Debug errors. Iterate until it works.",
+      "- Prefer multiple concurrent tool calls when independent (searches, reads).",
+      "",
+      "## File Keys",
+      "- `note:<slug>` → notes/ | `source:<slug>` → sources/ | `path:<path>` → exact location",
+      "- `experiment:<slug>` → experiments/ | `paper:<slug>` → papers/",
+      "",
+      "## REQUIRED: Call `finish_subagent` When Done",
+      "You MUST end by calling `finish_subagent`. Never stop without it. Include:",
+      "- `summary`: 2-3 sentences on what you accomplished",
+      "- `files_created`: every file you wrote",
+      "- `files_modified`: every file you edited",
+      "- `key_findings`: 3-5 most important discoveries (specific, not vague)",
+      "- `status`: completed | partial | blocked",
+      "",
+      `Workspace: ${workspaceRoot}`,
+    ];
+
+    if (skillPrompt) {
+      sections.push("");
+      sections.push("## Research Workflow");
+      sections.push(skillPrompt);
+    }
+
+    return sections.join("\n");
+  },
+};
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
 export const SUBAGENT_CONFIGS: Record<string, SubAgentConfig> = {
   explore: exploreConfig,
+  research: researchConfig,
 };
 
 export function getSubAgentConfig(type: string): SubAgentConfig | undefined {

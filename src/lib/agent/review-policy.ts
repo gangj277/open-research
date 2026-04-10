@@ -11,11 +11,20 @@ function isManagedSafePath(key: string): boolean {
   return (
     relativePath.startsWith("notes/") ||
     relativePath.startsWith("artifacts/") ||
-    relativePath.startsWith("sources/")
+    relativePath.startsWith("sources/") ||
+    relativePath.startsWith("run/")
   );
 }
 
 export function classifyUpdateRisk(update: ProposedUpdate): UpdateRiskResult {
+  // Run archive: auto-approve both new files and edits
+  if (update.key.startsWith("path:run/")) {
+    return {
+      policy: "auto-apply",
+      reason: "Files in run/ archive are agent-managed and safe to auto-apply.",
+    };
+  }
+
   if (update.type === "new" && isManagedSafePath(update.key)) {
     return {
       policy: "auto-apply",

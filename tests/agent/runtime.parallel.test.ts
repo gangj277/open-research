@@ -115,8 +115,7 @@ describe("runAgentTurn parallel tool execution", () => {
 
     const systemPrompt = provider.calls[0]?.messages[0]?.content;
     expect(typeof systemPrompt).toBe("string");
-    expect(systemPrompt).toContain("invoke all tools in a single response");
-    expect(systemPrompt).toContain("execute concurrently");
+    expect(systemPrompt).toContain("concurrently in a single response");
 
     const secondCallMessages = provider.calls[1]?.messages ?? [];
     const toolMessages = secondCallMessages.filter((message) => message.role === "tool");

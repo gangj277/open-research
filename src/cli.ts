@@ -245,6 +245,19 @@ source
     console.log(`Added source ${result.label} -> ${result.path}`);
   });
 
+program
+  .command("serve")
+  .description("Start the Open Research API server (headless mode).")
+  .option("-p, --port <port>", "Port to listen on", "3210")
+  .action(async (opts: { port: string }) => {
+    const { serve } = await import("@hono/node-server");
+    const { createApp } = await import("@/server/index");
+    const port = parseInt(opts.port, 10);
+    const { app } = createApp();
+    console.log(`Open Research server listening on http://localhost:${port}`);
+    serve({ fetch: app.fetch, port });
+  });
+
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

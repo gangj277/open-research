@@ -1,10 +1,11 @@
 import type { LLMMessage } from "@/lib/llm/types";
 import type { LLMProvider } from "@/lib/llm/provider";
 import type { ToolExecutionResult } from "./tools";
-import { TOOL_SCHEMAS, getToolsForMode, isParallelSafe } from "./tool-schemas";
+import { TOOL_SCHEMAS, isParallelSafe } from "./tool-schemas";
 import type { ProposedUpdate, WorkspaceContext } from "./state";
-import { buildPlanningSystemPrompt } from "./prompts/planning";
-import { executeTool } from "./tool-dispatcher";
+import { executeTool, type ToolBridges } from "./tool-dispatcher";
+import type { QuestionBridge } from "./tools/ask-user";
+import type { ServerEvent } from "@/server/types";
 import type { SubAgentProgress } from "./subagent";
 import { loadRuntimeSkillByName, type RuntimeSkill } from "@/lib/skills/runtime";
 import {
@@ -18,7 +19,9 @@ import {
 import { loadAllMemories, selectRelevantMemories, formatMemoriesForPrompt } from "@/lib/memory/store";
 import { extractAndStoreMemories } from "@/lib/memory/extractor";
 import { readAgentsMd, maybeUpdateAgentsMd } from "@/lib/workspace/agents-md";
-import { getTaskContextBlock } from "@/lib/agent/tools/tasks";
+import { getCurrentTaskBlock } from "@/lib/agent/tools/current-task";
+import { classifyUpdateRisk } from "./review-policy";
+import { applyProposedUpdate } from "@/lib/workspace/apply-update";
 import { selectModelForTask, getProviderCatalog } from "@/lib/llm/provider-catalog";
 
 // ── Tool Activity Event ─────────────────────────────────────────────────────
@@ -38,7 +41,6 @@ export interface AgentTurnResult {
   proposedUpdates: ProposedUpdate[];
   activeSkills: RuntimeSkill[];
   searchResults: Array<{ title: string; url: string; provider: string }>;
-  detectedCharter?: string;
   tokenUsage: SessionTokenUsage;
 }
 
@@ -93,14 +95,7 @@ const TOOL_DESCRIPTIONS: Record<string, (args: Record<string, unknown>) => strin
     const goal = a.goal as string | undefined;
     return `Sub-agent (${type ?? "explore"}): ${goal?.slice(0, 60) ?? "task"}`;
   },
-  create_tasks: (a) => {
-    const tasks = a.tasks as Array<{ subject: string }> | undefined;
-    return `Creating ${tasks?.length ?? 0} task${(tasks?.length ?? 0) !== 1 ? "s" : ""}`;
-  },
-  update_task: (a) => {
-    const status = a.status as string | undefined;
-    return status ? `Task → ${status}` : "Updating task";
-  },
+  set_current_task: (a) => `Focus: ${(a.task as string)?.slice(0, 50) ?? ""}`
 };
 
 function describeToolCall(name: string, args: Record<string, unknown>): string {
@@ -145,62 +140,63 @@ function buildSystemPrompt(ctx: WorkspaceContext, activeSkills: RuntimeSkill[]):
     .map((skill) => `## Active Skill: ${skill.name}\n${skill.prompt}`)
     .join("\n\n");
   return [
-    "You are Open Research — a senior research director operating through a terminal CLI. You think like a principal investigator: decisive, evidence-driven, and efficient with the user's time.",
+    "You are Open Research — a research director who orchestrates specialized agents through a terminal CLI.",
+    "Your primary mode: understand the user's research question, decompose it into steps, delegate each step to the right sub-agent, and synthesize findings into clear conclusions.",
     "",
-    "## Communication Style",
-    "- Lead with conclusions, not process. State the finding first, then the evidence.",
-    "- Be concise. One clear paragraph beats five hedging ones. If it can be a sentence, don't make it a paragraph.",
-    "- No filler. Skip \"Great question!\", \"Let me think about this\", \"Here's what I found\". Just deliver the answer.",
-    "- Use structured output (bullets, tables, numbered lists) for complex information. Prose for synthesis and interpretation.",
-    "- When reporting on tool results, summarize — don't echo raw output. The user can read the files themselves.",
-    "- When presenting research findings, use this hierarchy: Conclusion → Key evidence → Caveats → Next steps.",
-    "- Cite precisely: author (year), title, and source. No vague \"studies show\" or \"research suggests\" without attribution.",
-    "- Match response length to question complexity. Simple questions get one-line answers. Deep analysis gets structured sections.",
+    "## Decision: Delegate or Direct",
+    "**Handle directly**: Quick lookups, single searches, clarifications, workspace edits, simple questions.",
+    "**Delegate via sub-agent**: Multi-step research, literature reviews, experiments, evidence analysis, paper drafting — anything requiring sustained focus across many tool calls.",
+    "When in doubt, delegate. Sub-agents have fresh context windows and work more deeply than you can in a single turn.",
     "",
-    "## Tools",
-    "You have full filesystem and shell access:",
-    "- `read_file` / `list_directory` / `search_workspace` — explore and read",
-    "- `run_command` — execute python, R, node, LaTeX, curl, git, etc.",
-    "- `write_new_file` / `update_existing_file` — create and edit workspace files",
-    "- `search_external_sources` — search academic papers and extract evidence for/against a target (arXiv, Semantic Scholar, OpenAlex)",
-    "- `web_search` — search the web and extract evidence for/against a target (docs, blogs, datasets, news)",
-    "- `fetch_url` — fetch a specific URL when you already know the address",
-    "- `ask_user` — ask clarifying questions when genuinely needed",
-    "- `load_skill` — activate specialized research workflows",
-    "- `launch_subagent` — delegate exploration to a lightweight sub-agent that runs on its own context window",
-    "- `create_tasks` / `update_task` — track multi-step research progress (3+ steps only). Tasks are injected into your context automatically.",
-    "- When multiple reads, searches, fetches, or sub-agent launches are independent, invoke all tools in a single response so they can execute concurrently.",
+    "## How You Work (Multi-Step Tasks)",
+    "1. Set your focus: `set_current_task('Planning: ...')`",
+    "2. Create a plan: `write_new_file` with key `path:run/archive/{YYYY-MM-DDTHH-MM-SS}/plan.md` — markdown checklist with context per step",
+    "3. Delegate each step:",
+    "   `launch_subagent(type: 'research', skill: 'source-scout', goal: '...', context: '...')`",
+    "   Skills: source-scout, experiment-designer, data-analyst, devils-advocate, methodology-critic, evidence-adjudicator, novelty-checker, paper-explainer, draft-paper, reviewer-response",
+    "4. Read the handoff report. Update the plan (check off items, add findings).",
+    "5. Synthesize results for the user — conclusion first, then evidence, then caveats.",
+    "For workspace exploration, use `launch_subagent(type: 'explore', ...)` (read-only, faster).",
     "",
-    "## Sub-Agents",
-    "Use `launch_subagent` instead of reading files yourself when exploring unfamiliar parts of the workspace or searching across many files.",
-    "The sub-agent has zero context from this conversation — it only sees what you write in `goal` and `context`.",
-    "**You must write detailed, self-contained instructions:**",
-    "- `goal`: Exactly what to find. Include specific function names, file paths, class names, or patterns you already know. State what form the answer should take.",
-    "- `context`: What you already know, what you've ruled out, why you need this information, and any constraints on where to look.",
-    "Bad: \"Find how auth works\"",
-    "Good: \"Find all files involved in the OpenAI OAuth flow. I know auth tokens are stored in ~/.open-research/auth.json. I need to understand: (1) where the OAuth URL is constructed, (2) how tokens are refreshed, (3) what headers are sent on API calls. Report file paths with line numbers.\"",
-    "Do NOT re-read files the sub-agent already summarized. Trust its findings and build on them.",
+    "## Writing Sub-Agent Instructions",
+    "Sub-agents have ZERO context from this conversation. Your `goal` and `context` must be self-contained:",
+    "- `goal`: Exactly what to accomplish. What output to produce. Where to write it.",
+    "- `context`: What the user wants. What's already in the workspace. What to build on or skip.",
+    "Trust sub-agent handoff reports. Do NOT re-do their work. Read the files they created if you need details.",
     "",
-    "## Operating Principles",
-    "- Explore before acting. Read the workspace state before writing anything.",
-    "- Ground every claim. Cite papers and data — never speculate without flagging it.",
-    "- Run code to verify. Write a script, execute it, check the output. Don't assume correctness.",
-    "- Ask only when necessary. Use `ask_user` for genuine ambiguity, not for things you can figure out from context.",
-    "- Redirect large outputs to files. Read selectively — don't dump entire datasets into responses.",
-    "- Always wrap file paths in backticks: `notes/brief.md`, `experiments/analysis.py:42`.",
+    "## Tools (for direct handling)",
+    "- `read_file` / `read_pdf` / `list_directory` / `search_workspace` — explore workspace",
+    "- `write_new_file` / `update_existing_file` — create and edit files (key prefixes: `note:`, `source:`, `paper:`, `experiment:`, `path:`)",
+    "- `run_command` — execute shell commands (python, R, LaTeX, git, pip, etc.)",
+    "- `search_external_sources` — academic paper search with auto-adversarial queries and evidence classification",
+    "- `web_search` — web search with auto-adversarial queries (supports multiple queries)",
+    "- `traverse_citations` — follow citation chains forward/backward from a paper",
+    "- `fetch_url` — fetch a specific URL",
+    "- `ask_user` — only for genuine ambiguity the workspace can't resolve",
+    "- Invoke independent tools concurrently in a single response.",
+    "",
+    "## Evidence Standards",
+    "- Every claim needs a citation. No \"studies show\" without attribution.",
+    "- Weigh by evidence hierarchy: meta-analysis > experiment > observational > review > opinion.",
+    "- Report methodology: sample sizes, study design, confidence levels.",
+    "- When evidence conflicts, flag it — don't silently pick a side.",
+    "",
+    "## Communication",
+    "- Conclusion first, evidence second, caveats third.",
+    "- Match length to complexity. One-line answers for simple questions.",
+    "- No filler. No \"Great question!\". No restating what the user said.",
+    "- Use structured formats (bullets, tables) for complex findings.",
     "",
     "## Workspace Organization",
-    "The workspace has managed directories. When creating files with `write_new_file`, use the correct key prefix:",
-    "- `note:<slug>` → `notes/` — analysis write-ups, literature reviews, meeting notes, briefs",
-    "- `paper:<slug>` → `papers/` — LaTeX manuscripts and drafts",
-    "- `experiment:<slug>` → `experiments/` — experiment definitions, configs, results",
-    "- `source:<slug>` → `sources/` — extracted text from papers, articles, datasets",
-    "- `path:<relative/path>` → exact location — scripts, code, CSV data, configs, anything else",
-    "Use descriptive slugs that read naturally: `note:scaling-law-comparison`, `experiment:ablation-dropout-rates`, `path:scripts/parse-arxiv.py`.",
-    "Use the `folder` param to group related files: e.g. key `note:gpt4-findings` with folder `lit-review` creates `notes/lit-review/gpt4-findings.md`.",
-    "Never use bare keys without a prefix — they end up in `artifacts/` which is not user-facing.",
+    "Use the correct key prefix when writing files:",
+    "- `note:<slug>` → `notes/` — analysis, reviews, findings",
+    "- `source:<slug>` → `sources/` — extracted paper/article text",
+    "- `paper:<slug>` → `papers/` — LaTeX manuscripts",
+    "- `experiment:<slug>` → `experiments/` — experiment definitions, results",
+    "- `path:<relative/path>` → exact location — scripts, data, configs",
+    "Use `folder` param to group: `note:findings` with folder `lit-review` → `notes/lit-review/findings.md`.",
     "",
-    `## Workspace\nRoot: ${process.cwd()}`,
+    `## Workspace: ${process.cwd()}`,
     skillText,
   ]
     .filter(Boolean)
@@ -231,7 +227,6 @@ export async function runAgentTurn(input: {
   homeDir?: string;
   model?: string;
   reasoningEffort?: import("@/lib/llm/types").ReasoningEffort;
-  mode?: "planning" | "full";
   activeSkills?: RuntimeSkill[];
   onTextDelta?: (chunk: string) => void;
   onToolActivity?: (activity: ToolActivity) => void;
@@ -244,17 +239,18 @@ export async function runAgentTurn(input: {
   onOntologyUpdated?: () => void;
   onSubAgentProgress?: (progress: SubAgentProgress) => void;
   signal?: AbortSignal;
+  /** Injectable bridges for server mode (optional — falls back to module-level state) */
+  questionBridge?: QuestionBridge;
+  /** Emit all events to a server-side sink (optional — used alongside callbacks) */
+  eventSink?: (event: ServerEvent) => void;
 }): Promise<AgentTurnResult> {
   const requestedSkills = await parseRequestedSkills(input.message, input.homeDir);
   const activeSkills = [...(input.activeSkills ?? []), ...requestedSkills].filter(
     (skill, index, array) => array.findIndex((item) => item.id === skill.id) === index
   );
 
-  const isPlanning = input.mode === "planning";
-  const tools = isPlanning ? getToolsForMode("planning") : TOOL_SCHEMAS;
-  const systemPrompt = isPlanning
-    ? buildPlanningSystemPrompt(input.workspace, activeSkills)
-    : buildSystemPrompt(input.workspace, activeSkills);
+  const tools = TOOL_SCHEMAS;
+  const systemPrompt = buildSystemPrompt(input.workspace, activeSkills);
 
   const model = input.model ?? getProviderCatalog(input.provider.kind).defaultModel;
   const usage = input.sessionUsage ?? createSessionUsage();
@@ -273,7 +269,7 @@ export async function runAgentTurn(input: {
     : "";
 
   // Load task context (if tasks exist)
-  const taskBlock = getTaskContextBlock();
+  const taskBlock = getCurrentTaskBlock();
 
   // Load ontology scaffolding (relevance agent + formatting)
   let ontologyBlock: string | null = null;
@@ -342,6 +338,7 @@ export async function runAgentTurn(input: {
       if (chunk.type === "text_delta") {
         fullText += chunk.content;
         input.onTextDelta?.(chunk.content);
+        input.eventSink?.({ type: "text_delta", content: chunk.content });
       } else if (chunk.type === "done") {
         toolCalls = chunk.toolCalls;
         // Update token usage from API response
@@ -358,14 +355,6 @@ export async function runAgentTurn(input: {
     // ── No tool calls → final response ──────────────────────────────────
     if (toolCalls.length === 0) {
       messages.push({ role: "assistant", content: fullText });
-
-      let detectedCharter: string | undefined;
-      if (isPlanning) {
-        const charterMatch = fullText.match(/```research-charter\n([\s\S]*?)```/);
-        if (charterMatch?.[1]) {
-          detectedCharter = charterMatch[1].trim();
-        }
-      }
 
       // Background: extract memories + update AGENTS.md (fire-and-forget)
       extractAndStoreMemories({
@@ -415,7 +404,6 @@ export async function runAgentTurn(input: {
         proposedUpdates,
         activeSkills,
         searchResults,
-        detectedCharter,
         tokenUsage: usage,
       };
     }
@@ -445,15 +433,20 @@ export async function runAgentTurn(input: {
       }
 
       const description = describeToolCall(toolCall.name, args);
-      input.onToolActivity?.({
+      const startActivity: ToolActivity = {
         type: "tool_start",
         toolCallId: toolCall.id,
         name: toolCall.name,
         description,
-      });
+      };
+      input.onToolActivity?.(startActivity);
+      input.eventSink?.({ type: "tool_activity", activity: startActivity });
 
       const startTime = Date.now();
       try {
+        const bridges: ToolBridges = {};
+        if (input.questionBridge) bridges.questionBridge = input.questionBridge;
+
         const result = await executeTool(
           toolCall.name,
           args,
@@ -463,26 +456,31 @@ export async function runAgentTurn(input: {
           signal,
           input.provider,
           input.onSubAgentProgress,
-          toolCall.id
+          toolCall.id,
+          bridges
         );
         const durationMs = Date.now() - startTime;
-        input.onToolActivity?.({
+        const endActivity: ToolActivity = {
           type: "tool_end",
           toolCallId: toolCall.id,
           name: toolCall.name,
           description,
           durationMs,
-        });
+        };
+        input.onToolActivity?.(endActivity);
+        input.eventSink?.({ type: "tool_activity", activity: endActivity });
         return { toolCall, result, description, durationMs };
       } catch (error) {
         const durationMs = Date.now() - startTime;
-        input.onToolActivity?.({
+        const errActivity: ToolActivity = {
           type: "tool_end",
           toolCallId: toolCall.id,
           name: toolCall.name,
           description,
           durationMs,
-        });
+        };
+        input.onToolActivity?.(errActivity);
+        input.eventSink?.({ type: "tool_activity", activity: errActivity });
         return {
           toolCall,
           result: { result: formatToolError(toolCall.name, error) },
@@ -512,6 +510,17 @@ export async function runAgentTurn(input: {
       for (const { toolCall, result } of completed) {
         if (result.proposedUpdate) {
           proposedUpdates.push(result.proposedUpdate);
+          // Auto-apply safe files immediately so they're accessible within the same turn
+          if (input.workspace.workspaceDir) {
+            const risk = classifyUpdateRisk(result.proposedUpdate);
+            if (risk.policy === "auto-apply") {
+              await applyProposedUpdate(input.workspace.workspaceDir, result.proposedUpdate);
+              input.workspace.workspaceFiles[result.proposedUpdate.key] = result.proposedUpdate.content;
+              if (!input.workspace.availableKeys.includes(result.proposedUpdate.key)) {
+                input.workspace.availableKeys.push(result.proposedUpdate.key);
+              }
+            }
+          }
         }
         if (result.searchResults) {
           searchResults.push(

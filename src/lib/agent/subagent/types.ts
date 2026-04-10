@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../tools";
 import type { ReasoningEffort } from "@/lib/llm/types";
+import type { SubAgentHandoff } from "../tools/finish-subagent";
 
 // ── Sub-Agent Type Configuration ───────────────────────────────────────────
 
@@ -14,8 +15,8 @@ export interface SubAgentConfig {
   reasoningEffort: ReasoningEffort;
   /** Which tools this agent type can access (by name) */
   allowedTools: Set<string>;
-  /** System prompt builder — receives workspace root for context */
-  buildSystemPrompt: (workspaceRoot: string) => string;
+  /** System prompt builder — receives workspace root, and optionally a skill prompt */
+  buildSystemPrompt: (workspaceRoot: string, skillPrompt?: string) => string;
   /** Max tool-call iterations before forced termination (safety) */
   maxIterations: number;
 }
@@ -46,4 +47,6 @@ export interface SubAgentResult {
   durationMs: number;
   /** Whether it hit the iteration limit */
   hitLimit: boolean;
+  /** Structured handoff report from finish_subagent (if called) */
+  handoff?: SubAgentHandoff;
 }

@@ -1,5 +1,5 @@
 import type { DiscoveredSource } from "@/lib/discovery/scholarly-search";
-import type { AddedSource, ProposedUpdate, TaskPlan, TaskState } from "../state";
+import type { AddedSource, ProposedUpdate } from "../state";
 
 // ── OpenAI-format Tool Schemas ──
 
@@ -20,7 +20,4 @@ export interface ToolExecutionResult {
   searchResults?: DiscoveredSource[];
   loadedSkillId?: string;
   addedSources?: AddedSource[];
-  taskPlan?: TaskPlan;
-  completedTaskId?: string;
-  nextTask?: TaskState;
 }

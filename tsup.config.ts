@@ -6,7 +6,7 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 export default defineConfig({
-  entry: ["src/cli.ts"],
+  entry: ["src/cli.ts", "src/server/serve.ts"],
   format: ["esm"],
   clean: true,
   outDir: "dist",

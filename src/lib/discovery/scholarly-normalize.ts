@@ -96,6 +96,7 @@ export function normalizeSemanticScholarPaper(
     title: paper.title,
     url: sourceUrl ?? pdfUrl ?? "",
     pdfUrl,
+    abstract: paper.abstract,
     publishedDate: paper.publicationDate,
     author: undefined,
     provider: "semantic-scholar",

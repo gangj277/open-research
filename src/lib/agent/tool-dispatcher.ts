@@ -6,7 +6,7 @@ import { executeReadFile } from "./tools/read-file";
 import { executeListDirectory } from "./tools/list-directory";
 import { executeRunCommand } from "./tools/run-command";
 import { executeFetchUrl } from "./tools/fetch-url";
-import { executeAskUser } from "./tools/ask-user";
+import { executeAskUser, type QuestionBridge } from "./tools/ask-user";
 import { executeSearchWorkspace } from "./tools/search-workspace";
 import { executeWriteNewFile } from "./tools/write-new-file";
 import { executeUpdateExistingFile } from "./tools/update-existing-file";
@@ -15,7 +15,11 @@ import { executeReadPdf } from "./tools/read-pdf";
 import { executeSearchExternalSources } from "./search-external-sources";
 import { loadRuntimeSkillByName, readSkillReferenceFile } from "@/lib/skills/runtime";
 import { runSubAgent, type SubAgentProgress } from "./subagent";
-import { executeCreateTasks, executeUpdateTask } from "./tools/tasks";
+import { executeSetCurrentTask } from "./tools/current-task";
+
+export interface ToolBridges {
+  questionBridge?: QuestionBridge;
+}
 
 export async function executeTool(
   name: string,
@@ -26,7 +30,8 @@ export async function executeTool(
   signal?: AbortSignal,
   provider?: LLMProvider,
   onSubAgentProgress?: (progress: SubAgentProgress) => void,
-  toolCallId?: string
+  toolCallId?: string,
+  bridges?: ToolBridges
 ): Promise<ToolExecutionResult> {
   switch (name) {
     // ── File & Workspace ────────────────────────────────────────────────
@@ -133,7 +138,8 @@ export async function executeTool(
             options?: Array<{ label: string; description: string }>;
             allow_custom?: boolean;
           },
-          signal
+          signal,
+          bridges?.questionBridge
         ),
       };
 
@@ -173,11 +179,14 @@ export async function executeTool(
       if (!provider) {
         return { result: "Error: sub-agent requires an LLM provider but none was available." };
       }
-      const { type, goal, context } = args as { type: string; goal: string; context?: string };
+      const { type, skill, goal, context } = args as { type: string; skill?: string; goal: string; context?: string };
+      // If skill is provided, default to research type
+      const resolvedType = skill && type === "explore" ? "research" : type;
       const result = await runSubAgent({
         agentId: toolCallId ?? crypto.randomUUID(),
         provider,
-        type,
+        type: resolvedType,
+        skill,
         goal,
         context,
         workspace: ctx,
@@ -185,20 +194,55 @@ export async function executeTool(
         signal,
         onProgress: onSubAgentProgress,
       });
+
+      // Format the handoff report for the main agent
       const meta = `[${result.toolCallCount} tool calls · ${(result.durationMs / 1000).toFixed(1)}s${result.hitLimit ? " · hit iteration limit" : ""}]`;
+
+      if (result.handoff) {
+        const h = result.handoff;
+        const sections = [
+          `## Sub-Agent Report${skill ? `: ${skill}` : ""}`,
+          `Status: ${h.status}${h.blockedReason ? ` — ${h.blockedReason}` : ""}`,
+          `Duration: ${(result.durationMs / 1000).toFixed(1)}s (${result.toolCallCount} tool calls)`,
+          "",
+          `### Summary`,
+          h.summary,
+        ];
+        if (h.filesCreated.length > 0) {
+          sections.push("", "### Files Created");
+          for (const f of h.filesCreated) sections.push(`- ${f}`);
+        }
+        if (h.filesModified.length > 0) {
+          sections.push("", "### Files Modified");
+          for (const f of h.filesModified) sections.push(`- ${f}`);
+        }
+        if (h.keyFindings.length > 0) {
+          sections.push("", "### Key Findings");
+          for (let i = 0; i < h.keyFindings.length; i++) {
+            sections.push(`${i + 1}. ${h.keyFindings[i]}`);
+          }
+        }
+        return { result: sections.join("\n") };
+      }
+
       return { result: `${result.summary}\n\n${meta}` };
     }
 
-    // ── Task Tracking ────────────────────────────────────────────────
-    case "create_tasks":
+    // ── Current Task Focus ────────────────────────────────────────────
+    case "set_current_task":
       return {
-        result: executeCreateTasks(args as { tasks: Array<{ subject: string; activeForm?: string }> }),
+        result: executeSetCurrentTask(args as { task: string }),
       };
 
-    case "update_task":
+    // ── Citation Traversal ────────────────────────────────────────────────
+    case "traverse_citations": {
+      const { executeTraverseCitations } = await import("./tools/traverse-citations");
       return {
-        result: executeUpdateTask(args as { taskId: string; status?: string; subject?: string; activeForm?: string }),
+        result: await executeTraverseCitations(
+          args as { paper_id: string; direction: "references" | "citations"; limit?: number }
+        ),
       };
+    }
 
     // ── Ontology ──────────────────────────────────────────────────────────
     case "query_ontology": {

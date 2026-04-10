@@ -32,6 +32,8 @@ export interface SubAgentProgress {
   currentTool: string;
   /** Total completed tool calls so far */
   toolCount: number;
+  /** Last 3 completed tool descriptions for live progress display */
+  recentTools?: string[];
   /** "running" while active, "done" when finished */
   status: "running" | "done";
 }

@@ -73,6 +73,7 @@ export async function runSubAgent(input: {
   let iterations = 0;
   let handoff: SubAgentHandoff | undefined;
   let activeSkills: RuntimeSkill[] = [];
+  const recentToolDescriptions: string[] = []; // Last 3 completed tool descriptions
 
   function emitProgress(currentTool: string, status: "running" | "done" = "running") {
     input.onProgress?.({
@@ -81,8 +82,14 @@ export async function runSubAgent(input: {
       goal: input.goal,
       currentTool,
       toolCount: totalToolCalls,
+      recentTools: recentToolDescriptions.slice(-3),
       status,
     });
+  }
+
+  function trackCompletedTool(description: string) {
+    recentToolDescriptions.push(description);
+    if (recentToolDescriptions.length > 3) recentToolDescriptions.shift();
   }
 
   emitProgress("");
@@ -197,6 +204,8 @@ export async function runSubAgent(input: {
           activeSkills.push(skill);
         }
       }
+
+      trackCompletedTool(description);
 
       messages.push({
         role: "tool",

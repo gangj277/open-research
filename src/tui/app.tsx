@@ -31,7 +31,7 @@ import { hasConfiguredProvider } from "@/lib/llm/provider-resolution";
 import { ConfigScreen, type ConfigItem } from "@/tui/config-screen";
 import { SessionPicker } from "@/tui/session-picker";
 import { getPendingQuestion, clearPendingQuestion, type AskUserPendingQuestion } from "@/lib/agent/tools/ask-user";
-import { clearCurrentTask } from "@/lib/agent/tools/current-task";
+import { clearCurrentTask, getCurrentTask } from "@/lib/agent/tools/current-task";
 import { getPackageVersion } from "@/lib/cli/version";
 import { getContextWindow } from "@/lib/agent/context-manager";
 import { createSessionUsage, type SessionTokenUsage } from "@/lib/agent/context-manager";
@@ -60,6 +60,8 @@ import {
   PromptPrefix,
   FooterBar,
   ThinkingIndicator,
+  ActivityFeed,
+  type ActivityItem,
   type SuggestionItem,
 } from "@/tui/components";
 import {
@@ -167,20 +169,11 @@ export function App({
     [activeToolActivities],
   );
   const currentToolActivity = useMemo(() => {
-    if (activeToolDescriptions.length === 0) {
-      return "";
-    }
-
-    if (activeToolDescriptions.length === 1 && turnToolCount === 0) {
-      return activeToolDescriptions[0] ?? "";
-    }
-
-    if (activeToolDescriptions.length === 1) {
-      return "Running 1 tool";
-    }
-
+    if (activeToolDescriptions.length === 0) return "";
+    if (activeToolDescriptions.length === 1) return activeToolDescriptions[0] ?? "";
+    if (activeToolDescriptions.length === 2) return activeToolDescriptions.join(" · ");
     return `Running ${activeToolDescriptions.length} tools in parallel`;
-  }, [activeToolDescriptions, turnToolCount]);
+  }, [activeToolDescriptions]);
   useEffect(() => {
     if (!busy) {
       setLatchedToolActivity("");
@@ -642,6 +635,11 @@ export function App({
               durationMs: activity.durationMs,
             });
             setTurnToolCount(turnToolLogRef.current.length);
+            // Instant file write notification
+            if (activity.name === "write_new_file" || activity.name === "update_existing_file") {
+              const verb = activity.name === "write_new_file" ? "Created" : "Updated";
+              addSystemMessage(`  \u25CA ${verb}: ${activity.description ?? activity.name}`);
+            }
           }
         },
         onSubAgentProgress: (progress) => {
@@ -892,7 +890,25 @@ export function App({
           )}
 
           {showThinking && (
-            <ThinkingIndicator frame={activityFrame} width={contentWidth} />
+            <ThinkingIndicator frame={activityFrame} width={contentWidth} currentTask={getCurrentTask() ?? undefined} />
+          )}
+
+          {busy && turnToolLogRef.current.length > 0 && (
+            <ActivityFeed
+              frame={activityFrame}
+              width={contentWidth}
+              items={[
+                ...turnToolLogRef.current.map((t): ActivityItem => ({
+                  description: t.description,
+                  status: "done" as const,
+                  durationMs: t.durationMs,
+                })),
+                ...Object.values(activeToolActivities).map((desc): ActivityItem => ({
+                  description: desc,
+                  status: "active" as const,
+                })),
+              ]}
+            />
           )}
 
           {visibleSubAgents.map((progress) => (
@@ -902,6 +918,7 @@ export function App({
               goal={progress.goal}
               currentTool={progress.currentTool}
               toolCount={progress.toolCount}
+              recentTools={progress.recentTools}
               frame={activityFrame}
               width={contentWidth}
             />

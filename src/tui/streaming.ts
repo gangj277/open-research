@@ -37,10 +37,12 @@ export function splitMessagesForRender(
 
 export function createSentenceStreamBuffer({
   onFlush,
+  isVisible = () => true,
   flushIntervalMs = STREAM_FLUSH_INTERVAL_MS,
   flushPattern = STREAM_FLUSH_PATTERN,
 }: {
   onFlush: (text: string) => void;
+  isVisible?: () => boolean;
   flushIntervalMs?: number;
   flushPattern?: RegExp;
 }) {
@@ -53,8 +55,9 @@ export function createSentenceStreamBuffer({
     timer = null;
   };
 
-  const flush = () => {
+  const flush = (options?: { force?: boolean }) => {
     if (!buffer) return "";
+    if (!options?.force && !isVisible()) return "";
     clearPendingTimer();
     const text = buffer;
     buffer = "";
@@ -83,7 +86,7 @@ export function createSentenceStreamBuffer({
     flush,
     dispose() {
       clearPendingTimer();
-      return flush();
+      return flush({ force: true });
     },
   };
 }

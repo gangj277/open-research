@@ -132,6 +132,10 @@ class TestStdin extends EventEmitter {
     this.emit("data", data);
   }
 
+  emitRaw(data: string) {
+    this.emit("data", data);
+  }
+
   setEncoding() {}
   setRawMode() {}
   resume() {}
@@ -290,6 +294,39 @@ describe("tab-switch ghost render regression", () => {
     expect(stdout.frames.length).toBe(writesWhileHidden);
 
     stdout.resize(72);
+    await waitForUi();
+
+    unmount();
+    cleanup();
+  });
+
+  test("stops busy animation writes when terminal focus is lost without a resize", async () => {
+    runAgentTurnMock.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the app busy so the activity spinner would normally keep rendering.
+        })
+    );
+
+    const { stdin, stdout, unmount, cleanup } = renderReadyApp();
+
+    stdin.write("keep working");
+    stdin.write("\r");
+
+    await waitForMatch(stdout, "thinking...");
+
+    stdin.emitRaw("\u001b[O");
+    await waitForUi();
+
+    const writesWhileHidden = stdout.frames.length;
+
+    await waitForUi(320);
+
+    // Allow a small delta for tool-completion state updates (file write notifications)
+    // but no animation frames should fire while hidden
+    expect(stdout.frames.length - writesWhileHidden).toBeLessThanOrEqual(10);
+
+    stdin.emitRaw("\u001b[I");
     await waitForUi();
 
     unmount();

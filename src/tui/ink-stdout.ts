@@ -2,6 +2,10 @@ import { MIN_TERMINAL_WIDTH } from "@/tui/layout";
 
 const RAW_COLUMNS = Symbol("open-research.raw-columns");
 const RAW_ROWS = Symbol("open-research.raw-rows");
+const GET_VISIBILITY = Symbol("open-research.get-visibility");
+const SET_FOCUS_VISIBILITY = Symbol("open-research.set-focus-visibility");
+const ADD_VISIBILITY_LISTENER = Symbol("open-research.add-visibility-listener");
+const REMOVE_VISIBILITY_LISTENER = Symbol("open-research.remove-visibility-listener");
 
 function getStableRow(current: unknown, fallback: number): number {
   return typeof current === "number" && current > 0 ? current : fallback;
@@ -41,6 +45,35 @@ export function hasRenderableTerminalDimensions(stdout: {
   return hasRows && typeof columns === "number" && columns >= MIN_TERMINAL_WIDTH;
 }
 
+type VisibilityListener = (visible: boolean) => void;
+
+type VisibilityAwareStdout = NodeJS.WriteStream & {
+  [GET_VISIBILITY]?: () => boolean;
+  [SET_FOCUS_VISIBILITY]?: (visible: boolean) => void;
+  [ADD_VISIBILITY_LISTENER]?: (listener: VisibilityListener) => void;
+  [REMOVE_VISIBILITY_LISTENER]?: (listener: VisibilityListener) => void;
+};
+
+export function isTerminalVisible(stdout: NodeJS.WriteStream): boolean {
+  const stream = stdout as VisibilityAwareStdout;
+  return stream[GET_VISIBILITY]?.() ?? hasRenderableTerminalDimensions(stdout);
+}
+
+export function setTerminalFocusVisible(stdout: NodeJS.WriteStream, visible: boolean): void {
+  (stdout as VisibilityAwareStdout)[SET_FOCUS_VISIBILITY]?.(visible);
+}
+
+export function observeTerminalVisibility(
+  stdout: NodeJS.WriteStream,
+  listener: VisibilityListener,
+): () => void {
+  const stream = stdout as VisibilityAwareStdout;
+  stream[ADD_VISIBILITY_LISTENER]?.(listener);
+  return () => {
+    stream[REMOVE_VISIBILITY_LISTENER]?.(listener);
+  };
+}
+
 /**
  * Preserve the last usable terminal dimensions so Ink doesn't fall into
  * fullscreen redraw mode when terminals briefly report invalid tab sizes.
@@ -61,6 +94,29 @@ export function createStableInkStdout(
     ? Math.max(MIN_TERMINAL_WIDTH, initialColumns)
     : 80;
   const resizeListeners = new Map<(...args: unknown[]) => void, (...args: unknown[]) => void>();
+  const visibilityListeners = new Set<VisibilityListener>();
+  let focusVisible = true;
+  let visible = focusVisible && hasRenderableTerminalDimensions({
+    [RAW_COLUMNS]: initialColumns,
+    [RAW_ROWS]: initialRows,
+  });
+
+  const syncVisibility = () => {
+    const nextVisible = focusVisible && hasRenderableTerminalDimensions({
+      [RAW_COLUMNS]: getRawDimension((stdout as { columns?: number }).columns),
+      [RAW_ROWS]: getRawDimension((stdout as { rows?: number }).rows),
+    });
+
+    if (nextVisible === visible) {
+      return visible;
+    }
+
+    visible = nextVisible;
+    for (const listener of visibilityListeners) {
+      listener(visible);
+    }
+    return visible;
+  };
 
   return new Proxy(stdout, {
     get(target, prop, receiver) {
@@ -70,6 +126,29 @@ export function createStableInkStdout(
 
       if (prop === RAW_COLUMNS) {
         return getRawDimension(Reflect.get(target, "columns", receiver));
+      }
+
+      if (prop === GET_VISIBILITY) {
+        return () => visible;
+      }
+
+      if (prop === SET_FOCUS_VISIBILITY) {
+        return (nextVisible: boolean) => {
+          focusVisible = nextVisible;
+          syncVisibility();
+        };
+      }
+
+      if (prop === ADD_VISIBILITY_LISTENER) {
+        return (listener: VisibilityListener) => {
+          visibilityListeners.add(listener);
+        };
+      }
+
+      if (prop === REMOVE_VISIBILITY_LISTENER) {
+        return (listener: VisibilityListener) => {
+          visibilityListeners.delete(listener);
+        };
       }
 
       if (prop === "rows") {
@@ -88,6 +167,16 @@ export function createStableInkStdout(
         return lastColumns;
       }
 
+      if (prop === "write") {
+        return (chunk: string | Uint8Array, ...args: unknown[]) => {
+          if (!visible) {
+            return true;
+          }
+
+          return Reflect.get(target, prop, receiver).call(target, chunk, ...args);
+        };
+      }
+
       if (prop === "on" || prop === "addListener" || prop === "once" || prop === "prependListener") {
         const method = prop;
         return (eventName: string | symbol, listener: (...args: unknown[]) => void) => {
@@ -98,6 +187,7 @@ export function createStableInkStdout(
 
               lastColumns = getStableColumn(rawColumns, lastColumns);
               lastRows = getStableRow(rawRows, lastRows);
+              syncVisibility();
 
               if (!hasRenderableTerminalDimensions({
                 [RAW_COLUMNS]: rawColumns,

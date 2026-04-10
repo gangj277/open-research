@@ -89,13 +89,45 @@ export const AgentMessage = memo(function AgentMessage({ text, width }: { text: 
 
 // ── Thinking Indicator ────────────────────────────────────────────────────
 
-export function ThinkingIndicator({ frame, width }: { frame: string; width?: number }) {
+export function ThinkingIndicator({ frame, width, currentTask }: { frame: string; width?: number; currentTask?: string }) {
   const theme = useTheme();
   const contentWidth = resolveWidth(width);
+  const label = currentTask || "thinking...";
   return (
     <Box marginBottom={1} width={contentWidth}>
       <Text color={theme.secondary} bold>{GUTTER.agent} </Text>
-      <Text color={theme.muted} dimColor>{frame} thinking...</Text>
+      <Text color={theme.muted} dimColor>{frame} {label}</Text>
+    </Box>
+  );
+}
+
+// ── Live Activity Feed ───────────────────────────────────────────────────────
+
+export interface ActivityItem {
+  description: string;
+  status: "done" | "active";
+  durationMs?: number;
+}
+
+export function ActivityFeed({ items, frame, width }: { items: ActivityItem[]; frame: string; width?: number }) {
+  const theme = useTheme();
+  const contentWidth = resolveWidth(width);
+  // Show only the last 6 items to keep it compact
+  const visible = items.slice(-6);
+  if (visible.length === 0) return null;
+
+  return (
+    <Box flexDirection="column" marginBottom={1} width={contentWidth}>
+      {visible.map((item, i) => {
+        const icon = item.status === "done" ? "✓" : frame;
+        const color = item.status === "done" ? theme.muted : theme.secondary;
+        const duration = item.durationMs !== undefined ? ` (${(item.durationMs / 1000).toFixed(1)}s)` : "";
+        return (
+          <Box key={i} paddingLeft={2}>
+            <Text color={color} dimColor={item.status === "done"}>{icon} {item.description}{duration}</Text>
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -166,6 +198,7 @@ export function SubAgentIndicator({
   goal,
   currentTool,
   toolCount,
+  recentTools,
   frame,
   width,
 }: {
@@ -173,6 +206,7 @@ export function SubAgentIndicator({
   goal: string;
   currentTool: string;
   toolCount: number;
+  recentTools?: string[];
   frame: string;
   width?: number;
 }) {
@@ -199,8 +233,13 @@ export function SubAgentIndicator({
       <Box width={innerWidth}>
         <Text color={theme.muted} dimColor wrap="wrap">  {shortGoal}</Text>
       </Box>
+      {recentTools && recentTools.length > 0 && recentTools.map((tool, i) => (
+        <Box key={i} width={innerWidth}>
+          <Text color={theme.muted} dimColor wrap="wrap">  ✓ {tool}</Text>
+        </Box>
+      ))}
       <Box width={innerWidth}>
-        <Text color={theme.text} wrap="wrap">  └ {status}</Text>
+        <Text color={theme.text} wrap="wrap">  {currentTool ? "◐" : "└"} {status}</Text>
       </Box>
     </Box>
   );

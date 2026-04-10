@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useStdout } from "ink";
-import { hasRenderableTerminalDimensions } from "@/tui/ink-stdout";
+import { isTerminalVisible } from "@/tui/ink-stdout";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 
@@ -12,7 +12,7 @@ export function useAnimatedFrame(active: boolean) {
     if (!active) { setIndex(0); return; }
 
     const timer = setInterval(() => {
-      if (!hasRenderableTerminalDimensions(stdout as NodeJS.WriteStream & { columns?: number; rows?: number })) {
+      if (!isTerminalVisible(stdout as NodeJS.WriteStream)) {
         return;
       }
 

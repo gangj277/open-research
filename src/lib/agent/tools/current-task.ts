@@ -15,6 +15,10 @@ export function getCurrentTaskBlock(): string | null {
   return `## Current Focus\n${currentTask}`;
 }
 
+export function getCurrentTask(): string | null {
+  return currentTask;
+}
+
 export function clearCurrentTask(): void {
   currentTask = null;
 }

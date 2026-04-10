@@ -155,12 +155,13 @@ describe("parallel tool activity UI", () => {
     stdin.write("\r");
 
     await waitForUi(25);
-    expect(lastFrame()).toContain("Running 2 tools in parallel");
-    expect(lastFrame()).toContain("(0 done)");
+    // With 2 parallel tools, both descriptions are shown joined
+    expect(lastFrame()).toContain("Reading a.ts");
+    expect(lastFrame()).toContain("Reading b.ts");
 
     await waitForUi(50);
-    expect(lastFrame()).toContain("Running 1 tool");
-    expect(lastFrame()).toContain("(1 done)");
+    // After one completes, the remaining tool's specific description is shown
+    expect(lastFrame()).toContain("Reading b.ts");
 
     release?.();
     await waitForUi(60);

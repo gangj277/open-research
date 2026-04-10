@@ -73,6 +73,7 @@ import { insetWidth } from "@/tui/layout";
 
 // ── Extracted modules ──────────────────────────────────────────────────────
 import { useAnimatedFrame } from "@/tui/hooks/use-animated-frame";
+import { useTerminalVisibility } from "@/tui/hooks/use-terminal-visibility";
 import { useTerminalWidth } from "@/tui/hooks/use-terminal-width";
 import { executeSlashCommand, type SlashCommandContext } from "@/tui/hooks/use-slash-commands";
 import { buildToolSummary } from "@/tui/helpers/tool-summary";
@@ -136,6 +137,7 @@ export function App({
   const deferredPendingUpdates = useDeferredValue(pendingUpdates);
   const visiblePendingUpdates =
     deferredPendingUpdates.length > 0 ? deferredPendingUpdates : pendingUpdates;
+  const terminalVisible = useTerminalVisibility();
   const activityFrame = useAnimatedFrame(busy);
   const terminalWidth = useTerminalWidth();
   const contentWidth = insetWidth(terminalWidth, 2);
@@ -145,6 +147,9 @@ export function App({
   const [agentQuestion, setAgentQuestion] = useState<AskUserPendingQuestion | null>(null);
   const previewRef = useRef<PreviewServer | null>(null);
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const terminalVisibleRef = useRef(terminalVisible);
+  const previousTerminalVisibleRef = useRef(terminalVisible);
+  const streamBufferRef = useRef<ReturnType<typeof createSentenceStreamBuffer> | null>(null);
 
   const isHome = messages.length === 0 && !busy;
   const { staticMessages, dynamicMessages } = useMemo(
@@ -267,6 +272,20 @@ export function App({
       }
     };
   }, []);
+
+  useEffect(() => {
+    terminalVisibleRef.current = terminalVisible;
+
+    if (terminalVisible) {
+      streamBufferRef.current?.flush();
+    }
+
+    if (terminalVisible && !previousTerminalVisibleRef.current) {
+      setMessageRenderVersion((current) => current + 1);
+    }
+
+    previousTerminalVisibleRef.current = terminalVisible;
+  }, [terminalVisible]);
 
   // ── Unified autocomplete (commands + skills) ────────────────────────────
 
@@ -598,7 +617,9 @@ export function App({
       let assistantText = "";
       streamBuffer = createSentenceStreamBuffer({
         onFlush: (text) => { addAssistantMessage(text); },
+        isVisible: () => terminalVisibleRef.current,
       });
+      streamBufferRef.current = streamBuffer;
       const result = await runAgentTurn({
         provider,
         message,
@@ -754,6 +775,7 @@ export function App({
       }
     } finally {
       streamBuffer?.dispose();
+      streamBufferRef.current = null;
       abortRef.current = null;
       setActiveToolActivities({});
       setSubAgentProgress({});

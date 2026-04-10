@@ -5,3 +5,4 @@ coverage
 .open-research
 CLAUDE.md
 tmp/
+artifacts/

@@ -285,6 +285,8 @@ const MANAGER_TOOLS = [
   },
 ];
 
+const READ_ONLY_TOOLS = new Set(["get_note", "search_notes", "get_connections"]);
+
 // ── Internal Tool Executor ─────────────────────────────────────────────────
 
 function executeManagerTool(
@@ -492,8 +494,9 @@ export async function runOntologyManager(input: {
         ontology
       );
 
-      // Track mutations (write tools change the ontology)
-      if (updated !== ontology) mutated = true;
+      // Track mutations — write tools mutate ontology in place (same reference),
+      // so we detect by tool name rather than reference identity
+      if (!READ_ONLY_TOOLS.has(toolCall.name)) mutated = true;
       ontology = updated;
 
       messages.push({
